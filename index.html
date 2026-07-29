@@ -608,8 +608,8 @@ function closeDrawer(){
 // DASHBOARD
 // ═══════════════════════════════════════
 function renderDashboard(tab='hoy', horizonte){
-  // Si hay Supabase y no hay datos, forzar sync primero
-  if(_supabase && DB.clientes().length === 0 && DB.prestamos().length === 0){
+  // Si hay Supabase y no hay datos, forzar sync primero (solo si nunca hemos sincronizado)
+  if(_supabase && _lastSync === 0 && DB.clientes().length === 0 && DB.prestamos().length === 0){
     const screen = document.getElementById('screen');
     if(screen) screen.innerHTML = '<div style="padding:60px 20px;text-align:center;color:var(--txt3)"><div style="font-size:32px;margin-bottom:12px">🔄</div><p>Cargando datos de la nube...</p></div>';
     syncData(true).then(function(){ renderDashboard(tab); });
@@ -1021,8 +1021,8 @@ function attachClienteListeners(){
 }
 
 function renderClientes(query){
-  // Si hay Supabase y el cache está vacío, sincronizar primero
-  if(_supabase && DB.clientes().length === 0){
+  // Si hay Supabase y el cache está vacío, sincronizar primero (solo si nunca hemos sincronizado)
+  if(_supabase && _lastSync === 0 && DB.clientes().length === 0){
     mostrarToast('🔄 Cargando...');
     syncData(true).then(function(){
       renderClientes(query);
@@ -1200,8 +1200,8 @@ function renderPrestamos(filtro='todos'){
   const fab = document.querySelector('.fab');
   if(fab) fab.remove();
 
-  // Si hay Supabase y cache vacío, sincronizar primero
-  if(_supabase && DB.prestamos().length === 0){
+  // Si hay Supabase y cache vacío, sincronizar primero (solo si nunca hemos sincronizado)
+  if(_supabase && _lastSync === 0 && DB.prestamos().length === 0){
     mostrarToast('🔄 Cargando...');
     syncData(true).then(function(){ renderPrestamos(filtro); });
     return;

@@ -9,6 +9,7 @@
 <title>Cartera</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 :root{
@@ -1142,6 +1143,7 @@ function renderClienteDetalle(id){
     <button class="btn btn-secondary" id="btn-editar-cliente" style="flex:1;min-width:80px">Editar</button>
     <button class="btn btn-secondary" id="btn-score-cliente" style="flex:1;min-width:80px">★ Score</button>
     ${c.telefono?'<button class="btn btn-success" id="btn-wsp-cliente" style="flex:1;min-width:100px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>WhatsApp</button>':''}
+    <button class="btn btn-secondary" id="btn-pdf-cliente" style="flex:1;min-width:80px">📄 PDF</button>
     ${soyAdmin()?'<button class="btn btn-danger" id="btn-eliminar-cliente" style="flex:1;min-width:80px;padding:10px">🗑 Eliminar</button>':''}
   </div>
 
@@ -1191,6 +1193,10 @@ function renderClienteDetalle(id){
   if(btnScore) btnScore.addEventListener('click', function(){ openDrawerScoreCliente(id); });
   const btnWsp = document.getElementById('btn-wsp-cliente');
   if(btnWsp) btnWsp.addEventListener('click', function(){ compartirResumen(id); });
+  const btnPdf = document.getElementById('btn-pdf-cliente');
+  if(btnPdf) btnPdf.addEventListener('click', function(){ compartirResumenPDF(id); });
+  const btnEliminar = document.getElementById('btn-eliminar-cliente');
+  if(btnEliminar) btnEliminar.addEventListener('click', function(){ confirmarEliminarCliente(id); });
 }
 
 // ═══════════════════════════════════════
@@ -1766,12 +1772,15 @@ function renderFormCliente(id){
   btn.style.cssText = 'width:100%;background:var(--gold);color:#1a1200;border:none;border-radius:8px;font-size:15px;font-weight:500;padding:14px;cursor:pointer;margin-top:8px';
 
   btn.addEventListener('click', async function(){
+    if(this.disabled) return; // evita doble clic mientras guarda
     const nombre = document.getElementById('f-nombre').value.trim();
     if(!nombre){
       alert('El nombre es obligatorio');
       document.getElementById('f-nombre').focus();
       return;
     }
+    this.disabled = true;
+    this.textContent = 'Guardando...';
     const datos = {
       nombre: nombre,
       telefono: document.getElementById('f-tel').value.trim(),
@@ -1790,7 +1799,7 @@ function renderFormCliente(id){
           if(result) id = result.id;
         }
       } catch(e){ result = null; console.error(e); }
-      if(!result){ mostrarToast('❌ Error al guardar en la nube'); return; }
+      if(!result){ mostrarToast('❌ Error al guardar en la nube'); this.disabled=false; this.textContent=esEdicion?'Guardar cambios':'Crear cliente'; return; }
       // Actualizar caché local
       await syncData(true);
     } else {
@@ -2005,6 +2014,9 @@ async function guardarPrestamo(clienteId){
   if(!monto||!tasa||!fi||!fv) return alert('Completa monto, tasa y fechas');
   if(monto<=0||tasa<=0) return alert('Monto y tasa deben ser positivos');
 
+  const btnGP = document.getElementById('btn-guardar-prestamo');
+  if(btnGP){ if(btnGP.disabled) return; btnGP.disabled = true; btnGP.textContent = 'Guardando...'; }
+
   const calc = calcPrestamo(monto, tasa, cuotas, freq);
   const ps = DB.prestamos();
   const nuevoPrestamo = {
@@ -2020,7 +2032,7 @@ async function guardarPrestamo(clienteId){
     try{
       await gsWrite('prestamos','create',nuevoPrestamo);
       await syncData(true);
-    } catch(e){ mostrarToast('❌ Error al crear préstamo: '+e.message); return; }
+    } catch(e){ mostrarToast('❌ Error al crear préstamo: '+e.message); if(btnGP){ btnGP.disabled=false; btnGP.textContent='Crear préstamo'; } return; }
   } else {
     ps.push({id:uid(), num_credito:nextNumPrestamo(), ...nuevoPrestamo, created_at:Date.now()});
     DB.savePrestamos(ps);
@@ -2096,6 +2108,9 @@ async function guardarAbono(prestamoId){
   const fecha = document.getElementById('a-fecha').value;
   const obs = document.getElementById('a-obs').value.trim();
 
+  const btnGA = document.getElementById('btn-guardar-abono');
+  if(btnGA){ if(btnGA.disabled) return; btnGA.disabled = true; btnGA.textContent = 'Guardando...'; }
+
   const nuevoAbono = {prestamo_id:prestamoId, monto, tipo_abono:tipo, fecha_abono:fecha, observaciones:obs};
   if(_supabase){
     try{
@@ -2108,7 +2123,7 @@ async function guardarAbono(prestamoId){
         await gsWrite('prestamos','update',{id:prestamoId,estado:'pagado'});
         await syncData(true);
       }
-    } catch(e){ mostrarToast('❌ Error al guardar abono: '+e.message); return; }
+    } catch(e){ mostrarToast('❌ Error al guardar abono: '+e.message); if(btnGA){ btnGA.disabled=false; btnGA.textContent='Registrar abono'; } return; }
   } else {
     const abonos = DB.abonos();
     abonos.push({id:uid(),...nuevoAbono, created_at:Date.now()});
@@ -2221,13 +2236,18 @@ async function guardarCapital(tipoForzado){
   const tipo = tipoForzado || document.getElementById('cap-tipo')?.value || 'ingreso';
   const fecha = document.getElementById('cap-fecha').value;
   const desc = document.getElementById('cap-desc')?.value.trim()||'';
+
+  const btnIdCap = tipoForzado==='retiro' ? 'btn-retirar-cap' : 'btn-inyectar-cap';
+  const btnCap = document.getElementById(btnIdCap);
+  if(btnCap){ if(btnCap.disabled) return; btnCap.disabled = true; btnCap.textContent = 'Guardando...'; }
+
   const movs = DB.capital();
   movs.push({id:uid(), monto, tipo, fecha, descripcion:desc, created_at:Date.now()});
   if(_supabase){
     try{
       await gsWrite('capitalMovimientos','create',{monto,tipo:tipoForzado||document.getElementById('cap-tipo')?.value||'ingreso',fecha,descripcion:desc});
       await syncData(true);
-    } catch(e){ mostrarToast('❌ Error: '+e.message); return; }
+    } catch(e){ mostrarToast('❌ Error: '+e.message); if(btnCap){ btnCap.disabled=false; btnCap.textContent = tipoForzado==='retiro'?'Confirmar retiro':'Confirmar inyección'; } return; }
   } else {
     DB.saveCapital(movs);
   }
@@ -2279,12 +2299,16 @@ async function guardarGasto(){
   const monto = parseFloat(document.getElementById('g-monto').value);
   const concepto = document.getElementById('g-concepto').value.trim();
   if(!monto||monto<=0||!concepto) return alert('Monto y concepto son obligatorios');
+
+  const btnGG = document.getElementById('btn-guardar-gasto');
+  if(btnGG){ if(btnGG.disabled) return; btnGG.disabled = true; btnGG.textContent = 'Guardando...'; }
+
   const nuevoGasto = {monto,concepto,categoria:document.getElementById('g-cat').value,fecha:document.getElementById('g-fecha').value};
   if(_supabase){
     try{
       await gsWrite('gastos','create',nuevoGasto);
       await syncData(true);
-    } catch(e){ mostrarToast('❌ Error: '+e.message); return; }
+    } catch(e){ mostrarToast('❌ Error: '+e.message); if(btnGG){ btnGG.disabled=false; btnGG.textContent='Registrar'; } return; }
   } else {
     const gastos = DB.gastos();
     gastos.push({id:uid(),...nuevoGasto,created_at:Date.now()});
@@ -2303,6 +2327,164 @@ async function guardarGasto(){
 // ═══════════════════════════════════════
 // WHATSAPP / COMPARTIR
 // ═══════════════════════════════════════
+// ═══════════════════════════════════════
+// GENERADOR DE PDF ESTILO TARJETA
+// ═══════════════════════════════════════
+const PDF_W = 100; // ancho de la tarjeta en mm
+const PDF_COL = {
+  dark: [22,20,15],
+  gold: [232,201,154],
+  goldLabel: [154,111,36],
+  labelTxt: [74,69,61],
+  valueTxt: [26,26,26],
+  altRow: [245,240,228],
+  border: [225,220,208],
+  subtitle: [214,208,196]
+};
+
+function pdfCrear(alturaMM){
+  const {jsPDF} = window.jspdf;
+  return new jsPDF({unit:'mm', format:[PDF_W, Math.max(alturaMM,60)]});
+}
+
+function pdfHeader(doc, titulo, subtitulo){
+  doc.setFillColor.apply(doc, PDF_COL.dark);
+  doc.rect(0, 0, PDF_W, 22, 'F');
+  doc.setTextColor(255,255,255);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(13);
+  doc.text(titulo, 8, 12);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(9);
+  doc.setTextColor.apply(doc, PDF_COL.subtitle);
+  doc.text(subtitulo, 8, 18);
+  return 30;
+}
+
+function pdfFila(doc, y, label, valor, alterna){
+  if(alterna){
+    doc.setFillColor.apply(doc, PDF_COL.altRow);
+    doc.rect(0, y-4.5, PDF_W, 7, 'F');
+  }
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(9);
+  doc.setTextColor.apply(doc, PDF_COL.labelTxt);
+  doc.text(label, 8, y);
+  doc.setTextColor.apply(doc, PDF_COL.valueTxt);
+  doc.text(String(valor), PDF_W-8, y, {align:'right'});
+  return y+7;
+}
+
+function pdfSeccionTitulo(doc, y, texto){
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(8);
+  doc.setTextColor.apply(doc, PDF_COL.goldLabel);
+  doc.text(texto.toUpperCase(), 8, y);
+  return y+6;
+}
+
+function pdfFilaTabla(doc, y, col1, col2, col3){
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor.apply(doc, PDF_COL.labelTxt);
+  doc.text(col1, 8, y);
+  if(col2) doc.text(col2, 38, y);
+  doc.setTextColor.apply(doc, PDF_COL.valueTxt);
+  doc.text(col3, PDF_W-8, y, {align:'right'});
+  doc.setDrawColor.apply(doc, PDF_COL.border);
+  doc.setLineWidth(0.15);
+  doc.line(8, y+2.3, PDF_W-8, y+2.3);
+  return y+7.5;
+}
+
+function pdfCajaSaldo(doc, y, label, valor){
+  const h = 16;
+  doc.setFillColor.apply(doc, PDF_COL.dark);
+  doc.roundedRect(8, y, PDF_W-16, h, 2, 2, 'F');
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(9);
+  doc.setTextColor(224,217,204);
+  doc.text(label, 12, y+10);
+  doc.setFontSize(14);
+  doc.setTextColor.apply(doc, PDF_COL.gold);
+  doc.text(String(valor), PDF_W-12, y+10.5, {align:'right'});
+  return y+h+6;
+}
+
+async function compartirArchivo(blob, filename){
+  try{
+    const file = new File([blob], filename, {type:'application/pdf'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:filename});
+      return;
+    }
+  } catch(e){
+    if(e.name === 'AbortError') return; // el usuario cerró el menú de compartir
+    console.error('Share error:', e);
+  }
+  // Fallback: descargar el archivo para compartirlo manualmente
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+  mostrarToast('📄 PDF descargado — ábrelo y compártelo por WhatsApp');
+}
+
+async function compartirResumenPDF(clienteId){
+  const c = DB.clientes().find(x=>x.id===clienteId);
+  const ps = DB.prestamos().filter(p=>p.cliente_id===clienteId&&['activo','mora'].includes(estadoPrestamo(p)));
+  if(ps.length===0) return alert('Este cliente no tiene prestamos activos');
+
+  const fecha = new Date().toLocaleDateString('es-CO',{day:'2-digit',month:'long',year:'numeric'});
+
+  const bloques = ps.map(function(p){
+    const abonos = DB.abonos().filter(a=>a.prestamo_id===p.id).sort((a,b)=>new Date(a.fecha_abono)-new Date(b.fecha_abono));
+    let h = 6 + 4*7;
+    if(abonos.length>0) h += 6 + abonos.length*7.5 + 3;
+    h += 22 + 3;
+    return {p, abonos, h};
+  });
+  let alturaEstimada = 30 + 12 + 10;
+  bloques.forEach(function(b){ alturaEstimada += b.h; });
+
+  const doc = pdfCrear(alturaEstimada);
+  let y = pdfHeader(doc, 'Estado de cuenta', fecha);
+
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(8);
+  doc.setTextColor.apply(doc, PDF_COL.labelTxt);
+  doc.text('CLIENTE', 8, y);
+  doc.setFontSize(11);
+  doc.setTextColor.apply(doc, PDF_COL.valueTxt);
+  doc.text(c.nombre, 8, y+6);
+  y += 12;
+
+  bloques.forEach(function(b){
+    const p = b.p;
+    const est = estadoPrestamo(p);
+    const estLabel = est==='mora' ? 'En mora' : 'Al dia';
+    y = pdfSeccionTitulo(doc, y, 'Prestamo - '+estLabel);
+    y = pdfFila(doc, y, 'Capital prestado', fmt(p.monto_prestado), false);
+    y = pdfFila(doc, y, 'Tasa', p.tasa_interes_mensual+'% m.v.', true);
+    y = pdfFila(doc, y, 'Total a pagar', fmt(p.total_a_pagar), false);
+    y = pdfFila(doc, y, 'Vence', fmtDate(p.fecha_vencimiento), true);
+    if(b.abonos.length>0){
+      y += 3;
+      y = pdfSeccionTitulo(doc, y, 'Abonos realizados');
+      b.abonos.forEach(function(a){
+        const tipoLabel = a.tipo_abono==='total'?'Pago total': a.tipo_abono==='capital'?'Capital': a.tipo_abono==='interes'?'Interes':'Mixto';
+        y = pdfFilaTabla(doc, y, fmtDate(a.fecha_abono), tipoLabel, fmt(a.monto));
+      });
+    }
+    const saldo = saldoPrestamo(p);
+    y += 3;
+    y = pdfCajaSaldo(doc, y, 'Saldo pendiente', fmt(saldo));
+  });
+
+  const blob = doc.output('blob');
+  await compartirArchivo(blob, 'estado_cuenta_'+c.nombre.replace(/\s+/g,'_')+'.pdf');
+}
+
 function compartirResumen(clienteId){
   const c = DB.clientes().find(x=>x.id===clienteId);
   const ps = DB.prestamos().filter(p=>p.cliente_id===clienteId&&['activo','mora'].includes(estadoPrestamo(p)));
@@ -4167,11 +4349,13 @@ function openCalculadoraProyeccion(){
         '<div class="form-group"><label class="form-label">Celular para WhatsApp</label><input class="form-input" id="proj-cel" type="tel" placeholder="3101234567"></div>' +
       '</div>' +
       '<div id="proj-preview" style="display:none;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:14px;margin-bottom:14px"></div>' +
-      '<button class="btn btn-primary btn-full" id="btn-enviar-proyeccion">📲 Enviar por WhatsApp</button>' +
+      '<button class="btn btn-primary btn-full" id="btn-enviar-proyeccion-pdf" style="margin-bottom:8px">📄 Enviar como PDF</button>' +
+      '<button class="btn btn-secondary btn-full" id="btn-enviar-proyeccion">📲 Enviar como texto</button>' +
     '</div>'
   );
   calcProyeccion();
   document.getElementById('btn-enviar-proyeccion').addEventListener('click', enviarProyeccionWsp);
+  document.getElementById('btn-enviar-proyeccion-pdf').addEventListener('click', enviarProyeccionPDF);
 }
 
 function calcProyeccion(){
@@ -4282,6 +4466,58 @@ function enviarProyeccionWsp(){
   if(_dr) _dr.classList.remove('show');
 }
 
+async function enviarProyeccionPDF(){
+  const monto   = parseFloat(document.getElementById('proj-monto')?.value)||0;
+  const tasa    = parseFloat(document.getElementById('proj-tasa')?.value)||0;
+  const cuotas  = parseInt(document.getElementById('proj-cuotas')?.value)||1;
+  const freq    = parseInt(document.getElementById('proj-freq')?.value)||30;
+  const fechaIni = document.getElementById('proj-fecha')?.value || today();
+  const nombre  = document.getElementById('proj-nombre')?.value.trim()||'';
+
+  if(monto <= 0 || tasa <= 0){ mostrarToast('⚠️ Ingresa monto y tasa'); return; }
+
+  const calc = calcPrestamo(monto, tasa, cuotas, freq);
+
+  function fechaCuotaPDF(n){
+    const d = new Date(fechaIni+'T12:00:00');
+    d.setDate(d.getDate() + freq*n);
+    return d.toLocaleDateString('es-CO',{day:'2-digit',month:'short',year:'numeric'});
+  }
+
+  const alturaEstimada = 30 + 12 + 4*7 + 6 + cuotas*7.5 + 3 + 22 + 10;
+  const doc = pdfCrear(alturaEstimada);
+  let y = pdfHeader(doc, 'Simulacion de prestamo', 'Valida antes de aceptar');
+
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(8);
+  doc.setTextColor.apply(doc, PDF_COL.labelTxt);
+  doc.text('PARA', 8, y);
+  doc.setFontSize(11);
+  doc.setTextColor.apply(doc, PDF_COL.valueTxt);
+  doc.text(nombre || 'Cliente potencial', 8, y+6);
+  y += 12;
+
+  y = pdfFila(doc, y, 'Capital', fmt(monto), false);
+  y = pdfFila(doc, y, 'Tasa', tasa+'% m.v.', true);
+  y = pdfFila(doc, y, 'Cuotas', cuotas+' c/'+freq+' dias', false);
+  y = pdfFila(doc, y, 'Total a pagar', fmt(calc.total), true);
+
+  y += 3;
+  y = pdfSeccionTitulo(doc, y, 'Plan de pagos');
+  for(let i=1;i<=cuotas;i++){
+    y = pdfFilaTabla(doc, y, 'Cuota '+i, fechaCuotaPDF(i), fmt(calc.valorCuota));
+  }
+  y += 3;
+  pdfCajaSaldo(doc, y, 'Valor por cuota', fmt(calc.valorCuota));
+
+  const blob = doc.output('blob');
+  const nombreArchivo = (nombre||'simulacion').replace(/\s+/g,'_');
+  await compartirArchivo(blob, 'simulacion_'+nombreArchivo+'.pdf');
+
+  const _ov2=document.getElementById('overlay'); const _dr2=document.getElementById('drawer');
+  if(_ov2){_ov2.classList.remove('show');_ov2.style.pointerEvents='none';_ov2.style.opacity='0';}
+  if(_dr2) _dr2.classList.remove('show');
+}
 
 // ═══════════════════════════════════════
 // MEJORA 2: CIERRES FINANCIEROS

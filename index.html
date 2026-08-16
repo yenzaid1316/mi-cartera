@@ -1578,7 +1578,7 @@ function renderClienteDetalle(id){
     <button class="btn btn-secondary" id="btn-editar-cliente" style="flex:1;min-width:80px">Editar</button>
     <button class="btn btn-secondary" id="btn-score-cliente" style="flex:1;min-width:80px">★ Score</button>
     ${c.telefono?'<button class="btn btn-success" id="btn-wsp-cliente" style="flex:1;min-width:100px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>WhatsApp</button>':''}
-    <button class="btn btn-secondary" id="btn-pdf-cliente" style="flex:1;min-width:80px">PDF</button>
+    <button class="btn" id="btn-pdf-cliente" style="flex:1;min-width:80px;background:rgba(122,165,245,.14);color:var(--blue);border:1px solid rgba(122,165,245,.34)">${ico('file',14)} PDF</button>
     ${soyAdmin()?'<button class="btn btn-danger" id="btn-eliminar-cliente" style="flex:1;min-width:80px;padding:10px">Eliminar</button>':''}
   </div>
 
@@ -2529,6 +2529,7 @@ function ofrecerRecibo(prestamoId, monto, fecha){
       (prox?'<div>Próxima cuota: <strong style="color:var(--txt)">'+fmt(prox.total-prox.pagado)+'</strong> el '+fmtDate(prox.fecha)+'</div>':'<div style="color:var(--green)">Préstamo cancelado en su totalidad</div>')+
     '</div>'+
     '<button class="btn btn-success btn-full" style="margin-bottom:9px" onclick="enviarRecibo(\''+escJs(prestamoId)+'\','+monto+',\''+escJs(fecha)+'\')">'+ico('whatsapp',17)+' Enviar por WhatsApp</button>'+
+    '<button class="btn btn-full" style="margin-bottom:9px;background:rgba(122,165,245,.14);color:var(--blue);border:1px solid rgba(122,165,245,.34)" onclick="closeDrawer();pdfComprobanteAbono(\''+escJs(prestamoId)+'\','+monto+',\''+escJs(fecha)+'\')">'+ico('receipt',17)+' Enviar PDF adjunto</button>'+
     '<button class="btn btn-secondary btn-full" onclick="closeDrawer()">Ahora no</button></div>');
 }
 function enviarRecibo(prestamoId, monto, fecha){
@@ -2763,6 +2764,21 @@ async function guardarGasto(){
   if(r.ok) setTimeout(()=>toastOk('Gasto registrado'), 100);
 }
 
+// ═══════════════════════════════════════
+// GENERADOR DE PDF ESTILO TARJETA
+// ═══════════════════════════════════════
+const PDF_W = 100; // ancho de la tarjeta en mm
+const PDF_COL = {
+  dark: [22,20,15],
+  gold: [232,201,154],
+  goldLabel: [154,111,36],
+  labelTxt: [74,69,61],
+  valueTxt: [26,26,26],
+  altRow: [245,240,228],
+  border: [225,220,208],
+  subtitle: [214,208,196]
+};
+
 function pdfCrear(alturaMM){
   const {jsPDF} = window.jspdf;
   return new jsPDF({unit:'mm', format:[PDF_W, Math.max(alturaMM,60)]});
@@ -2904,6 +2920,56 @@ async function compartirResumenPDF(clienteId){
 
   const blob = doc.output('blob');
   await compartirArchivo(blob, 'estado_cuenta_'+c.nombre.replace(/\s+/g,'_')+'.pdf');
+}
+
+/** Comprobante en PDF de UN solo crédito, con su último abono resaltado — pensado para enviar por WhatsApp justo después de registrar un pago. */
+async function pdfComprobanteAbono(prestamoId, montoAbono, fechaAbono){
+  const p = DB.prestamos().find(x=>x.id===prestamoId);
+  if(!p) return toastErr('El préstamo ya no existe');
+  const c = DB.clientes().find(x=>x.id===p.cliente_id);
+  const pl = planPrestamo(p);
+  const abonos = pl.abonos.slice().sort((a,b)=>new Date(a.fecha_abono)-new Date(b.fecha_abono));
+  const fechaHoy = new Date().toLocaleDateString('es-CO',{day:'2-digit',month:'long',year:'numeric'});
+
+  let alturaEstimada = 30 + 12 + 6 + 2*7 + 3 + 6 + 4*7;
+  if(abonos.length>0) alturaEstimada += 6 + abonos.length*7.5 + 3;
+  alturaEstimada += 22 + 6;
+
+  const doc = pdfCrear(alturaEstimada);
+  let y = pdfHeader(doc, 'Comprobante de pago', fechaHoy);
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor.apply(doc, PDF_COL.labelTxt);
+  doc.text('CLIENTE', 8, y);
+  doc.setFontSize(11); doc.setTextColor.apply(doc, PDF_COL.valueTxt);
+  doc.text((c?c.nombre:'—') + (p.num_credito?'  ·  Credito #'+p.num_credito:''), 8, y+6);
+  y += 12;
+
+  y = pdfSeccionTitulo(doc, y, 'Abono recibido');
+  y = pdfFila(doc, y, 'Fecha', fmtDate(fechaAbono||today()), false);
+  y = pdfFila(doc, y, 'Monto abonado', fmt(montoAbono!=null?montoAbono:0), true);
+  y += 3;
+
+  y = pdfSeccionTitulo(doc, y, 'Detalle del prestamo');
+  y = pdfFila(doc, y, 'Capital prestado', fmt(p.monto_prestado), false);
+  y = pdfFila(doc, y, 'Tasa', p.tasa_interes_mensual+'% fijo mensual', true);
+  y = pdfFila(doc, y, 'Total a pagar', fmt(p.total_a_pagar), false);
+  y = pdfFila(doc, y, 'Vence', fmtDate(p.fecha_vencimiento), true);
+
+  if(abonos.length>0){
+    y += 3;
+    y = pdfSeccionTitulo(doc, y, 'Historial de abonos');
+    abonos.forEach(function(a){
+      const tipoLabel = a.tipo_abono==='total'?'Pago total': a.tipo_abono==='capital'?'Capital': a.tipo_abono==='interes'?'Interes':'Mixto';
+      y = pdfFilaTabla(doc, y, fmtDateCorta(a.fecha_abono), tipoLabel, fmt(a.monto));
+    });
+  }
+
+  y += 3;
+  y = pdfCajaSaldo(doc, y, 'Saldo pendiente', fmt(pl.saldo));
+
+  const blob = doc.output('blob');
+  const nombreArchivo = 'comprobante_'+(c?c.nombre.replace(/\s+/g,'_'):'cliente')+(p.num_credito?'_credito'+p.num_credito:'')+'.pdf';
+  await compartirArchivo(blob, nombreArchivo);
 }
 
 function compartirResumen(clienteId){
@@ -4819,8 +4885,20 @@ function actualizarPreviewEdicion(){
   const tasa   = parseFloat(document.getElementById('ep-tasa')?.value)||0;
   const cuotas = parseInt(document.getElementById('ep-cuotas')?.value)||1;
   const freq   = parseInt(document.getElementById('ep-freq')?.value)||30;
+  const fi     = document.getElementById('ep-finicio')?.value;
   const prev   = document.getElementById('ep-preview');
   if(!prev) return;
+
+  // Fecha de vencimiento automática: inicio + cuotas × frecuencia (igual que en "Nuevo préstamo")
+  if(fi){
+    const fvInput = document.getElementById('ep-fvence');
+    if(fvInput){
+      const fv = new Date(fi+'T12:00:00');
+      fv.setDate(fv.getDate() + freq*cuotas);
+      fvInput.value = fv.toISOString().slice(0,10);
+    }
+  }
+
   if(monto>0 && tasa>0){
     const calc = calcPrestamo(monto, tasa, cuotas, freq);
     prev.style.display = 'block';

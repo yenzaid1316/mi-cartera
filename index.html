@@ -652,16 +652,18 @@ function nextNumPrestamo(){
 
 function calcPrestamo(monto, tasa, cuotas, frecDias){
   // Interés FIJO sobre el capital inicial, prorrateado al período de cada cuota.
+  // Convención del negocio: 1 mes = 4 semanas (semanal), 2 quincenas (quincenal) o 1 mes calendario (mensual).
   const freq  = Number(frecDias)||30;
   const nc    = Math.max(1, Number(cuotas)||1);
-  const intPorCuota = monto * (tasa/100) * (freq/30);
+  const periodosPorMes = freq===7 ? 4 : freq===15 ? 2 : freq===30 ? 1 : (30/freq);
+  const intPorCuota = monto * (tasa/100) / periodosPorMes;
   const intTotal    = intPorCuota * nc;
   const total       = monto + intTotal;
   const valorCuota  = total / nc;
   const intMensual  = monto * (tasa/100);
   // Tasa efectiva real sobre saldo decreciente (referencia interna, no se le cobra al cliente)
   const saldoProm   = monto * (nc + 1) / (2 * nc);
-  const tasaEfMes   = saldoProm > 0 ? (intPorCuota / saldoProm) * (30/freq) * 100 : 0;
+  const tasaEfMes   = saldoProm > 0 ? (intPorCuota / saldoProm) * periodosPorMes * 100 : 0;
   return {intMensual, intPorCuota, intTotal, total, valorCuota, tasaEfMes};
 }
 
@@ -701,7 +703,7 @@ function abonosDe(prestamoId){
  * por monto acumulado (no por índice), separando interés y capital en cada uno.
  */
 function planPrestamo(p){
-  if(!p || !p.id) return {cuotas:[], abonos:[], interesCobrado:0, capitalRecuperado:0, abonado:0, saldo:0, cuotasVencidas:0, montoVencido:0, diasAtraso:0, proximaCuota:null};
+  if(!p || !p.id) return {cuotas:[], abonos:[], interesCobrado:0, capitalRecuperado:0, abonado:0, saldo:0, cuotasVencidas:0, montoVencido:0, diasAtraso:0, proximaCuota:null, semanasMora:0, tasaSemanalMora:0, recargoMora:0};
   return _memo('plan:'+p.id, function(){
     const freq   = Number(p.frecuencia_cobro)||30;
     const nc     = Math.max(1, Number(p.num_cuotas)||1);
@@ -755,18 +757,28 @@ function planPrestamo(p){
     const capitalRecuperado = Math.min(monto, abonos.reduce((t,a)=>t+a.aCapital,0));
     const vencidas = cuotas.filter(c=>c.vencida);
     const prox = cuotas.find(c=>!c.pagada);
+    const saldoFinal = Math.max(0, totalP - abonado);
+
+    // Recargo por mora — SOLO informativo, no se resta del saldo real ni entra en la cascada de abonos.
+    // Solo aplica cuando ya venció el préstamo COMPLETO (no por una cuota intermedia vencida).
+    // Base: saldo total pendiente. Tasa: la misma del préstamo, por semana (1 mes = 4 semanas, igual que calcPrestamo).
+    const diasVencidoTotal = (p.fecha_vencimiento && hoy > p.fecha_vencimiento) ? diffDays(p.fecha_vencimiento, hoy) : 0;
+    const semanasMora = Math.floor(diasVencidoTotal / 7);
+    const tasaSemanalMora = (Number(p.tasa_interes_mensual)||0) / 100 / 4;
+    const recargoMora = (saldoFinal > TOL && semanasMora > 0) ? saldoFinal * tasaSemanalMora * semanasMora : 0;
 
     return {
       cuotas, abonos,
       interesCobrado, capitalRecuperado, abonado,
       excesoPagado: abonos.reduce((t,a)=>t+a.aExceso,0),
-      saldo: Math.max(0, totalP - abonado),
+      saldo: saldoFinal,
       capitalPendiente: Math.max(0, monto - capitalRecuperado),
       interesPendiente: Math.max(0, intTot - interesCobrado),
       cuotasVencidas: vencidas.length,
       montoVencido: vencidas.reduce((t,c)=>t+(c.total-c.pagado),0),
       diasAtraso: vencidas.length ? Math.max.apply(null, vencidas.map(c=>c.diasRetraso)) : 0,
-      proximaCuota: prox || null
+      proximaCuota: prox || null,
+      semanasMora, tasaSemanalMora, recargoMora
     };
   });
 }
@@ -1793,6 +1805,7 @@ function renderPrestamoDetalle(id){
   const c = DB.clientes().find(x=>x.id===p.cliente_id);
   const est = estadoPrestamo(p);
   const saldo = saldoPrestamo(p);
+  const pl = planPrestamo(p);
   const abonos = DB.abonos().filter(a=>a.prestamo_id===id).sort((a,b)=>new Date(b.fecha_abono)-new Date(a.fecha_abono));
   const totalAbonado = abonos.reduce((s,a)=>s+a.monto,0);
   const pct = Math.min(100, Math.round((totalAbonado/p.total_a_pagar)*100));
@@ -1835,6 +1848,10 @@ function renderPrestamoDetalle(id){
       <span>Total ${fmt(p.total_a_pagar)}</span>
     </div>
   </div>
+
+  ${pl.recargoMora>TOL?`<div style="padding:0 20px;margin-bottom:16px">
+    <div class="alert alert-red">${ico('alert')}<div><strong>Recargo por mora sugerido: ${fmt(pl.recargoMora)}</strong><br><span style="font-size:11px">${pl.semanasMora} semana${pl.semanasMora>1?'s':''} vencida${pl.semanasMora>1?'s':''} desde el vencimiento del préstamo (${fmtDate(p.fecha_vencimiento)}) · ${(pl.tasaSemanalMora*100).toFixed(2)}% por semana sobre el saldo · No se cobra solo, tú decides si lo incluyes al registrar el abono</span></div></div>
+  </div>`:''}
 
   <div style="padding:0 20px;margin-bottom:16px">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -3336,7 +3353,7 @@ function calcRecordatorios(){
                     prestamo_id:p.id, cliente_id:p.cliente_id};
 
       if(pl.cuotasVencidas > 0){
-        enMora.push({...base, diasMora:pl.diasAtraso, monto:pl.montoVencido, cuotas:pl.cuotasVencidas});
+        enMora.push({...base, diasMora:pl.diasAtraso, monto:pl.montoVencido, cuotas:pl.cuotasVencidas, recargoMora:pl.recargoMora});
       }
       pl.cuotas.filter(c=>!c.pagada && !c.vencida).forEach(c=>{
         const item = {...base, monto:c.total-c.pagado, fecha:c.fecha, cuota:c.numero};
@@ -3374,7 +3391,7 @@ function renderRecordatorios(){
     <div>
       <div style="font-size:11px;color:var(--red);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;font-weight:600">En mora (${enMora.length})</div>
       <div style="display:flex;flex-direction:column;gap:6px">
-        ${enMora.map(r=>itemCobro(r,'red',r.diasMora+'d mora',r.saldo)).join('')}
+        ${enMora.map(r=>itemCobro(r,'red',r.diasMora+'d mora'+(r.recargoMora>TOL?' +recargo':''),r.saldo+(r.recargoMora||0))).join('')}
       </div>
     </div>`:''}
 

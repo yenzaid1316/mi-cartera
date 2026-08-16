@@ -1890,17 +1890,20 @@ function renderPrestamoDetalle(id){
     </button>
     <button class="btn btn-secondary" id="btn-marcar-pagado" onclick="marcarPagado('${escJs(id)}')" style="white-space:nowrap">Pago total</button>
   </div>`:''}
-  <div style="padding:0 20px;margin-bottom:16px;display:flex;gap:8px">
-    <button class="btn btn-secondary" style="flex:1;padding:10px" onclick="openDrawerAmortizacion('${id}')">
+  <div style="padding:0 20px;margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn btn-secondary" style="flex:1;min-width:110px;padding:10px" onclick="openDrawerAmortizacion('${id}')">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
       Tabla cuotas
     </button>
-    <button class="btn btn-secondary" style="flex:1;padding:10px" onclick="openDrawerScoreCliente('${p.cliente_id}')">
+    <button class="btn btn-secondary" style="flex:1;min-width:110px;padding:10px" onclick="openDrawerScoreCliente('${p.cliente_id}')">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
       Score cliente
     </button>
-    <button class="btn btn-secondary" style="flex:1;padding:10px" onclick="navigate('editar-prestamo','${escJs(id)}')">
+    <button class="btn btn-secondary" style="flex:1;min-width:110px;padding:10px" onclick="navigate('editar-prestamo','${escJs(id)}')">
       ${ico('edit',14)} Editar
+    </button>
+    <button class="btn" style="flex:1;min-width:110px;padding:10px;background:rgba(122,165,245,.14);color:var(--blue);border:1px solid rgba(122,165,245,.34)" onclick="pdfEstadoCredito('${escJs(id)}')">
+      ${ico('file',14)} PDF de este crédito
     </button>
   </div>
   <div style="padding:0 20px;margin-bottom:16px;display:flex;gap:8px">
@@ -2848,6 +2851,41 @@ function pdfCajaSaldo(doc, y, label, valor){
   return y+h+6;
 }
 
+/** Caja de contorno (sin relleno) para el total sugerido con recargo — se ve distinta de la caja oscura del saldo oficial, para no confundir las dos cifras. */
+function pdfCajaTotal(doc, y, label, valor){
+  const h = 16;
+  doc.setDrawColor.apply(doc, PDF_COL.goldLabel);
+  doc.setLineWidth(0.5);
+  doc.roundedRect(8, y, PDF_W-16, h, 2, 2, 'S');
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(9);
+  doc.setTextColor.apply(doc, PDF_COL.labelTxt);
+  doc.text(label, 12, y+10);
+  doc.setFontSize(14);
+  doc.setTextColor.apply(doc, PDF_COL.goldLabel);
+  doc.text(String(valor), PDF_W-12, y+10.5, {align:'right'});
+  return y+h+6;
+}
+
+/** Nota aclaratoria pequeña en cursiva, con salto de línea automático al ancho de la tarjeta. */
+function pdfNota(doc, y, texto){
+  doc.setFont('helvetica','italic');
+  doc.setFontSize(7.3);
+  doc.setTextColor.apply(doc, PDF_COL.labelTxt);
+  const lineas = doc.splitTextToSize(texto, PDF_W-16);
+  doc.text(lineas, 8, y);
+  return y + lineas.length*3.6 + 4;
+}
+
+/** Dibuja la sección "Recargo por mora sugerido" + la caja de total combinado, cuando el préstamo la tiene. Reutilizada por los 3 generadores de PDF para que se vean iguales. */
+function pdfBloqueMora(doc, y, pl){
+  if(!(pl.recargoMora > TOL)) return y;
+  y = pdfSeccionTitulo(doc, y, 'Recargo por mora sugerido');
+  y = pdfFila(doc, y, pl.semanasMora+' semana'+(pl.semanasMora>1?'s':'')+' vencida'+(pl.semanasMora>1?'s':'')+' · '+(pl.tasaSemanalMora*100).toFixed(2)+'%/semana', fmt(pl.recargoMora), true);
+  y = pdfNota(doc, y, 'Este recargo es una sugerencia, no una obligación — quien cobra decide si lo incluye al recibir el pago.');
+  return y;
+}
+
 async function compartirArchivo(blob, filename){
   try{
     const file = new File([blob], filename, {type:'application/pdf'});
@@ -2875,11 +2913,13 @@ async function compartirResumenPDF(clienteId){
   const fecha = new Date().toLocaleDateString('es-CO',{day:'2-digit',month:'long',year:'numeric'});
 
   const bloques = ps.map(function(p){
+    const pl = planPrestamo(p);
     const abonos = DB.abonos().filter(a=>a.prestamo_id===p.id).sort((a,b)=>new Date(a.fecha_abono)-new Date(b.fecha_abono));
     let h = 6 + 4*7;
     if(abonos.length>0) h += 6 + abonos.length*7.5 + 3;
+    if(pl.recargoMora>TOL) h += 60; // margen generoso: sección + fila + nota (hasta 3 líneas) + caja de total
     h += 22 + 3;
-    return {p, abonos, h};
+    return {p, pl, abonos, h};
   });
   let alturaEstimada = 30 + 12 + 10;
   bloques.forEach(function(b){ alturaEstimada += b.h; });
@@ -2897,7 +2937,7 @@ async function compartirResumenPDF(clienteId){
   y += 12;
 
   bloques.forEach(function(b){
-    const p = b.p;
+    const p = b.p, pl = b.pl;
     const est = estadoPrestamo(p);
     const estLabel = est==='mora' ? 'En mora' : 'Al dia';
     y = pdfSeccionTitulo(doc, y, 'Prestamo - '+estLabel);
@@ -2913,9 +2953,10 @@ async function compartirResumenPDF(clienteId){
         y = pdfFilaTabla(doc, y, fmtDateCorta(a.fecha_abono), tipoLabel, fmt(a.monto));
       });
     }
-    const saldo = saldoPrestamo(p);
+    if(pl.recargoMora>TOL){ y += 3; y = pdfBloqueMora(doc, y, pl); }
     y += 3;
-    y = pdfCajaSaldo(doc, y, 'Saldo pendiente', fmt(saldo));
+    y = pdfCajaSaldo(doc, y, 'Saldo pendiente', fmt(pl.saldo));
+    if(pl.recargoMora>TOL) y = pdfCajaTotal(doc, y, 'Total sugerido con recargo', fmt(pl.saldo+pl.recargoMora));
   });
 
   const blob = doc.output('blob');
@@ -2933,6 +2974,7 @@ async function pdfComprobanteAbono(prestamoId, montoAbono, fechaAbono){
 
   let alturaEstimada = 30 + 12 + 6 + 2*7 + 3 + 6 + 4*7;
   if(abonos.length>0) alturaEstimada += 6 + abonos.length*7.5 + 3;
+  if(pl.recargoMora>TOL) alturaEstimada += 60;
   alturaEstimada += 22 + 6;
 
   const doc = pdfCrear(alturaEstimada);
@@ -2964,11 +3006,64 @@ async function pdfComprobanteAbono(prestamoId, montoAbono, fechaAbono){
     });
   }
 
+  if(pl.recargoMora>TOL){ y += 3; y = pdfBloqueMora(doc, y, pl); }
   y += 3;
   y = pdfCajaSaldo(doc, y, 'Saldo pendiente', fmt(pl.saldo));
+  if(pl.recargoMora>TOL) y = pdfCajaTotal(doc, y, 'Total sugerido con recargo', fmt(pl.saldo+pl.recargoMora));
 
   const blob = doc.output('blob');
   const nombreArchivo = 'comprobante_'+(c?c.nombre.replace(/\s+/g,'_'):'cliente')+(p.num_credito?'_credito'+p.num_credito:'')+'.pdf';
+  await compartirArchivo(blob, nombreArchivo);
+}
+
+/** PDF de UN crédito puntual, disponible en cualquier momento desde su propia pantalla — útil cuando el cliente tiene varios préstamos y solo quiere el detalle de uno. */
+async function pdfEstadoCredito(prestamoId){
+  const p = DB.prestamos().find(x=>x.id===prestamoId);
+  if(!p) return toastErr('El préstamo ya no existe');
+  const c = DB.clientes().find(x=>x.id===p.cliente_id);
+  const pl = planPrestamo(p);
+  const abonos = pl.abonos.slice().sort((a,b)=>new Date(a.fecha_abono)-new Date(b.fecha_abono));
+  const fechaHoy = new Date().toLocaleDateString('es-CO',{day:'2-digit',month:'long',year:'numeric'});
+  const est = estadoPrestamo(p);
+  const estLabel = est==='mora' ? 'En mora' : est==='pagado' ? 'Pagado' : 'Al dia';
+
+  let alturaEstimada = 30 + 12 + 6 + 4*7 + 3;
+  if(abonos.length>0) alturaEstimada += 6 + abonos.length*7.5 + 3;
+  if(pl.recargoMora>TOL) alturaEstimada += 60;
+  alturaEstimada += 22 + 6;
+
+  const doc = pdfCrear(alturaEstimada);
+  let y = pdfHeader(doc, 'Estado del credito', fechaHoy);
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor.apply(doc, PDF_COL.labelTxt);
+  doc.text('CLIENTE', 8, y);
+  doc.setFontSize(11); doc.setTextColor.apply(doc, PDF_COL.valueTxt);
+  doc.text((c?c.nombre:'—') + (p.num_credito?'  ·  Credito #'+p.num_credito:'') + '  ·  '+estLabel, 8, y+6);
+  y += 12;
+
+  y = pdfSeccionTitulo(doc, y, 'Detalle del prestamo');
+  y = pdfFila(doc, y, 'Capital prestado', fmt(p.monto_prestado), false);
+  y = pdfFila(doc, y, 'Tasa', p.tasa_interes_mensual+'% fijo mensual', true);
+  y = pdfFila(doc, y, 'Total a pagar', fmt(p.total_a_pagar), false);
+  y = pdfFila(doc, y, 'Vence', fmtDate(p.fecha_vencimiento), true);
+
+  if(abonos.length>0){
+    y += 3;
+    y = pdfSeccionTitulo(doc, y, 'Historial de abonos');
+    abonos.forEach(function(a){
+      const tipoLabel = a.tipo_abono==='total'?'Pago total': a.tipo_abono==='capital'?'Capital': a.tipo_abono==='interes'?'Interes':'Mixto';
+      y = pdfFilaTabla(doc, y, fmtDateCorta(a.fecha_abono), tipoLabel, fmt(a.monto));
+    });
+  }
+
+  if(pl.recargoMora>TOL){ y += 3; y = pdfBloqueMora(doc, y, pl); }
+
+  y += 3;
+  y = pdfCajaSaldo(doc, y, 'Saldo pendiente', fmt(pl.saldo));
+  if(pl.recargoMora>TOL) y = pdfCajaTotal(doc, y, 'Total sugerido con recargo', fmt(pl.saldo+pl.recargoMora));
+
+  const blob = doc.output('blob');
+  const nombreArchivo = 'estado_credito_'+(c?c.nombre.replace(/\s+/g,'_'):'cliente')+(p.num_credito?'_'+p.num_credito:'')+'.pdf';
   await compartirArchivo(blob, nombreArchivo);
 }
 

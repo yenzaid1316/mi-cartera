@@ -3758,12 +3758,19 @@ function renderMovimientos(){
   results.style.cssText = 'padding:0 20px;margin-bottom:80px';
   screen.appendChild(results);
 
-  // Botón exportar
+  // Botones exportar (elegir Excel o PDF)
   const expRow = document.createElement('div');
-  expRow.style.cssText = 'padding:0 20px;margin-bottom:12px';
-  expRow.innerHTML = '<button id="btn-export-mov" style="width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--txt2);padding:11px;font-size:13px;cursor:pointer">Exportar a Excel (.csv)</button>';
+  expRow.style.cssText = 'padding:0 20px;margin-bottom:12px;display:flex;gap:8px';
+  expRow.innerHTML =
+    '<button id="btn-export-mov-excel" style="flex:1;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--txt2);padding:11px;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">'+ico('sheet',14)+' Excel (.csv)</button>' +
+    '<button id="btn-export-mov-pdf" style="flex:1;background:rgba(122,165,245,.14);border:1px solid rgba(122,165,245,.34);border-radius:8px;color:var(--blue);padding:11px;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">'+ico('file',14)+' PDF</button>';
   screen.insertBefore(expRow, results);
-  document.getElementById('btn-export-mov').addEventListener('click', exportarMovimientosCSV);
+  document.getElementById('btn-export-mov-excel').addEventListener('click', exportarMovimientosCSV);
+  document.getElementById('btn-export-mov-pdf').addEventListener('click', function(){
+    const desde = document.getElementById('mov-desde')?.value||'';
+    const hasta = document.getElementById('mov-hasta')?.value||'';
+    pdfMovimientos(desde, hasta);
+  });
 
   document.getElementById('btn-filtrar-mov').addEventListener('click', filtrarMovimientos);
   filtrarMovimientos();
@@ -3911,13 +3918,74 @@ function exportarMovimientosCSV(){
   movs.forEach(function(m){
     rows.push([m.fecha, m.tipoLabel, m.descripcion, m.monto, m.signo==='+' ? 'Entrada':'Salida', m.obs]);
   });
-  const csv = rows.map(function(r){ return r.map(function(c){ return '"'+String(c).replace(/"/g,'""')+'"'; }).join(','); }).join('\n');
+  // Separador ";" en vez de "," — con Excel en español, la región usa "," como separador decimal
+  // y espera ";" entre columnas; con "," el archivo entero cae en una sola columna al abrirlo.
+  const csv = rows.map(function(r){ return r.map(function(c){ return '"'+String(c).replace(/"/g,'""')+'"'; }).join(';'); }).join('\n');
   const blob = new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href=url; a.download='movimientos_'+(desde||'inicio')+'_'+(hasta||'hoy')+'.csv';
   a.click(); URL.revokeObjectURL(url);
   mostrarToast('CSV descargado — ábrelo en Excel');
+}
+
+/** Fila de un movimiento dentro del PDF: descripción + monto en la primera línea, tipo/observación en la segunda. */
+function pdfFilaMovimiento(doc, y, m){
+  const desc = m.descripcion.length>44 ? m.descripcion.slice(0,43)+'…' : m.descripcion;
+  const colMonto = m.signo==='+' ? [45,122,82] : [140,43,43]; // verde-oscuro / rojo-oscuro, legibles sobre fondo blanco
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor.apply(doc, PDF_COL.valueTxt);
+  doc.text(desc, 8, y);
+  doc.setTextColor.apply(doc, colMonto);
+  doc.text(m.signo+fmt(m.monto), PDF_W-8, y, {align:'right'});
+  y += 5;
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(7.3);
+  doc.setTextColor.apply(doc, PDF_COL.labelTxt);
+  doc.text(m.tipoLabel+(m.obs?' · '+m.obs:''), 8, y);
+  doc.setDrawColor.apply(doc, PDF_COL.border);
+  doc.setLineWidth(0.15);
+  doc.line(8, y+2.3, PDF_W-8, y+2.3);
+  return y+6.5;
+}
+
+/** PDF "estilo recibo" de los movimientos filtrados — misma info que el .csv, pero lista para compartir por WhatsApp.
+ * Esta tarjeta no tiene tamaño de página fijo (no es carta/A4), así que su alto se calcula según cuántos
+ * movimientos hay: nunca queda contenido cortado, sin importar el rango de fechas elegido. */
+async function pdfMovimientos(desde, hasta){
+  let movs = getMovimientosTodos();
+  if(desde) movs = movs.filter(function(m){ return m.fecha >= desde; });
+  if(hasta) movs = movs.filter(function(m){ return m.fecha <= hasta; });
+
+  if(movs.length===0) return toastErr('No hay movimientos en el rango seleccionado');
+
+  const totalEntradas = movs.filter(function(m){ return m.signo==='+'; }).reduce(function(s,m){ return s+m.monto; },0);
+  const totalSalidas  = movs.filter(function(m){ return m.signo==='−'; }).reduce(function(s,m){ return s+m.monto; },0);
+  const fechasUnicas = new Set(movs.map(function(m){ return m.fecha; })).size;
+
+  const alturaEstimada = 30 + 24 + fechasUnicas*6 + movs.length*13 + 20;
+  const doc = pdfCrear(alturaEstimada);
+  const rango = (desde?fmtDateCorta(desde):'inicio') + ' – ' + (hasta?fmtDateCorta(hasta):'hoy');
+  let y = pdfHeader(doc, 'Movimientos', rango);
+
+  y = pdfFila(doc, y, 'Movimientos', String(movs.length), false);
+  y = pdfFila(doc, y, 'Entradas', '+'+fmt(totalEntradas), true);
+  y = pdfFila(doc, y, 'Salidas', '−'+fmt(totalSalidas), false);
+  y += 3;
+
+  let fechaAnterior = null;
+  movs.forEach(function(m){
+    if(m.fecha !== fechaAnterior){
+      y = pdfSeccionTitulo(doc, y, fmtDate(m.fecha));
+      fechaAnterior = m.fecha;
+    }
+    y = pdfFilaMovimiento(doc, y, m);
+  });
+
+  const blob = doc.output('blob');
+  const nombreArchivo = 'movimientos_'+(desde||'inicio')+'_'+(hasta||'hoy')+'.pdf';
+  await compartirArchivo(blob, nombreArchivo);
 }
 
 // ═══════════════════════════════════════
@@ -3963,7 +4031,7 @@ function exportarReporteExcel(tipo){
   }
 
   if(rows.length<=1){ mostrarToast('Sin datos para exportar'); return; }
-  const csv = rows.map(function(r){ return r.map(function(c){ return '"'+String(c||'').replace(/"/g,'""')+'"'; }).join(','); }).join('\n');
+  const csv = rows.map(function(r){ return r.map(function(c){ return '"'+String(c||'').replace(/"/g,'""')+'"'; }).join(';'); }).join('\n');
   const blob = new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

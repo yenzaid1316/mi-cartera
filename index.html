@@ -2880,9 +2880,8 @@ function pdfNota(doc, y, texto){
 /** Dibuja la sección "Recargo por mora sugerido" + la caja de total combinado, cuando el préstamo la tiene. Reutilizada por los 3 generadores de PDF para que se vean iguales. */
 function pdfBloqueMora(doc, y, pl){
   if(!(pl.recargoMora > TOL)) return y;
-  y = pdfSeccionTitulo(doc, y, 'Recargo por mora sugerido');
+  y = pdfSeccionTitulo(doc, y, 'Recargo por mora');
   y = pdfFila(doc, y, pl.semanasMora+' semana'+(pl.semanasMora>1?'s':'')+' vencida'+(pl.semanasMora>1?'s':'')+' · '+(pl.tasaSemanalMora*100).toFixed(2)+'%/semana', fmt(pl.recargoMora), true);
-  y = pdfNota(doc, y, 'Este recargo es una sugerencia, no una obligación — quien cobra decide si lo incluye al recibir el pago.');
   return y;
 }
 

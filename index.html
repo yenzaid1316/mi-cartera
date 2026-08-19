@@ -2858,7 +2858,7 @@ function pdfCajaTotal(doc, y, label, valor){
   doc.setLineWidth(0.5);
   doc.roundedRect(8, y, PDF_W-16, h, 2, 2, 'S');
   doc.setFont('helvetica','bold');
-  doc.setFontSize(9);
+  doc.setFontSize(7.5); // más chico que la caja del saldo oficial: esta etiqueta es más larga ("Saldo pendiente + Recargo por mora") y no debe pisar la cifra
   doc.setTextColor.apply(doc, PDF_COL.labelTxt);
   doc.text(label, 12, y+10);
   doc.setFontSize(14);
@@ -2955,7 +2955,7 @@ async function compartirResumenPDF(clienteId){
     if(pl.recargoMora>TOL){ y += 3; y = pdfBloqueMora(doc, y, pl); }
     y += 3;
     y = pdfCajaSaldo(doc, y, 'Saldo pendiente', fmt(pl.saldo));
-    if(pl.recargoMora>TOL) y = pdfCajaTotal(doc, y, 'Total sugerido con recargo', fmt(pl.saldo+pl.recargoMora));
+    if(pl.recargoMora>TOL) y = pdfCajaTotal(doc, y, 'Saldo pendiente + Recargo por mora', fmt(pl.saldo+pl.recargoMora));
   });
 
   const blob = doc.output('blob');
@@ -3008,7 +3008,7 @@ async function pdfComprobanteAbono(prestamoId, montoAbono, fechaAbono){
   if(pl.recargoMora>TOL){ y += 3; y = pdfBloqueMora(doc, y, pl); }
   y += 3;
   y = pdfCajaSaldo(doc, y, 'Saldo pendiente', fmt(pl.saldo));
-  if(pl.recargoMora>TOL) y = pdfCajaTotal(doc, y, 'Total sugerido con recargo', fmt(pl.saldo+pl.recargoMora));
+  if(pl.recargoMora>TOL) y = pdfCajaTotal(doc, y, 'Saldo pendiente + Recargo por mora', fmt(pl.saldo+pl.recargoMora));
 
   const blob = doc.output('blob');
   const nombreArchivo = 'comprobante_'+(c?c.nombre.replace(/\s+/g,'_'):'cliente')+(p.num_credito?'_credito'+p.num_credito:'')+'.pdf';
@@ -3059,7 +3059,7 @@ async function pdfEstadoCredito(prestamoId){
 
   y += 3;
   y = pdfCajaSaldo(doc, y, 'Saldo pendiente', fmt(pl.saldo));
-  if(pl.recargoMora>TOL) y = pdfCajaTotal(doc, y, 'Total sugerido con recargo', fmt(pl.saldo+pl.recargoMora));
+  if(pl.recargoMora>TOL) y = pdfCajaTotal(doc, y, 'Saldo pendiente + Recargo por mora', fmt(pl.saldo+pl.recargoMora));
 
   const blob = doc.output('blob');
   const nombreArchivo = 'estado_credito_'+(c?c.nombre.replace(/\s+/g,'_'):'cliente')+(p.num_credito?'_'+p.num_credito:'')+'.pdf';

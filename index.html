@@ -1534,12 +1534,14 @@ function buildClientesList(query, filtro){
   let listaConDatos = clientes.map(function(c){
     const ps = DB.prestamos().filter(function(p){ return p.cliente_id===c.id; });
     const activos = ps.filter(function(p){ return ['activo','mora'].includes(estadoPrestamo(p)); });
+    const renovados = ps.filter(function(p){ return estadoPrestamo(p)==='renovado'; });
     const saldoTotal = activos.reduce(function(s,p){ return s+saldoPrestamo(p); },0);
-    return {c, activos, saldoTotal};
+    return {c, activos, renovados, saldoTotal};
   });
 
   if(filtro === 'con_saldo') listaConDatos = listaConDatos.filter(function(x){ return x.saldoTotal > TOL; });
   else if(filtro === 'pagados') listaConDatos = listaConDatos.filter(function(x){ return x.saldoTotal <= TOL; });
+  else if(filtro === 'renovados') listaConDatos = listaConDatos.filter(function(x){ return x.renovados.length > 0; });
   // 'todos' no filtra
 
   _clientesUltimoConteo = listaConDatos.length;
@@ -1548,18 +1550,22 @@ function buildClientesList(query, filtro){
     return '<div class="empty">' +
       '<svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="var(--txt3)" stroke-width="1.2"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>' +
       '<div class="empty-title">Sin resultados</div>' +
-      '<div class="empty-sub">' + (query ? 'Ningún cliente coincide' : filtro==='con_saldo' ? 'Ningún cliente tiene saldo pendiente' : 'Toca el botón + para agregar') + '</div>' +
+      '<div class="empty-sub">' + (query ? 'Ningún cliente coincide' : filtro==='con_saldo' ? 'Ningún cliente tiene saldo pendiente' : filtro==='renovados' ? 'Ningún cliente tiene créditos renovados' : 'Toca el botón + para agregar') + '</div>' +
     '</div>';
   }
 
   let html = '<div class="item-list">';
   listaConDatos.forEach(function(x){
-    const c = x.c, activos = x.activos, saldoTotal = x.saldoTotal;
+    const c = x.c, activos = x.activos, renovados = x.renovados, saldoTotal = x.saldoTotal;
     const hasMora = activos.some(function(p){ return estadoPrestamo(p)==='mora'; });
     const badge = hasMora
       ? '<span class="badge badge-red">Mora</span>': activos.length > 0
-        ? '<span class="badge badge-amber">Activo</span>': '<span class="badge badge-gray">Al día</span>';
-    const prestamosTxt = activos.length===0 ? 'Sin préstamos activos' : activos.length + ' préstamo' + (activos.length>1?'s':'');
+        ? '<span class="badge badge-amber">Activo</span>'
+        : renovados.length > 0 ? '<span class="badge" style="background:var(--violet)22;color:var(--violet)">Renovado</span>'
+        : '<span class="badge badge-gray">Al día</span>';
+    const prestamosTxt = activos.length===0
+      ? (renovados.length>0 ? renovados.length+' renovado'+(renovados.length>1?'s':'') : 'Sin préstamos activos')
+      : activos.length + ' préstamo' + (activos.length>1?'s':'');
     html +=
       '<div class="item" data-cid="' + c.id + '">' +
         '<div class="item-avatar">' + initials(c.nombre) + '</div>' +
@@ -1582,6 +1588,7 @@ function actualizarContadorClientes(){
   const n = _clientesUltimoConteo;
   cnt.textContent = _clientesFiltroActual==='con_saldo' ? n + ' con saldo'
     : _clientesFiltroActual==='pagados' ? n + (n===1?' pagado':' pagados')
+    : _clientesFiltroActual==='renovados' ? n + (n===1?' renovado':' renovados')
     : n + ' en total';
 }
 
@@ -1621,6 +1628,7 @@ function renderClientes(query){
         '<div style="padding:0 20px 0"><div class="toggle-group">' +
           '<button class="toggle-btn'+(_clientesFiltroActual==='con_saldo'?' active':'')+'" data-cfiltro="con_saldo">Con saldo</button>' +
           '<button class="toggle-btn'+(_clientesFiltroActual==='pagados'?' active':'')+'" data-cfiltro="pagados">Pagados</button>' +
+          '<button class="toggle-btn'+(_clientesFiltroActual==='renovados'?' active':'')+'" data-cfiltro="renovados">Renovados</button>' +
           '<button class="toggle-btn'+(_clientesFiltroActual==='todos'?' active':'')+'" data-cfiltro="todos">Todos</button>' +
         '</div></div>' +
         '<div class="section" id="clientes-lista"></div>' +
@@ -2046,7 +2054,7 @@ function renderPrestamoDetalle(id){
     <div class="alert alert-red">${ico('alert')}<div><strong>Recargo por mora sugerido: ${fmt(pl.recargoMora)}</strong><br><span style="font-size:11px">${pl.semanasMora} semana${pl.semanasMora>1?'s':''} vencida${pl.semanasMora>1?'s':''} desde el vencimiento del préstamo (${fmtDate(p.fecha_vencimiento)}) · ${(pl.tasaSemanalMora*100).toFixed(2)}% por semana sobre el saldo · No se cobra solo, tú decides si lo incluyes al registrar el abono</span></div></div>
   </div>`:''}
   ${puedeRenovar?`<div style="padding:0 20px;margin-bottom:16px">
-    <div class="alert" style="background:rgba(169,140,240,.12);border:1px solid rgba(169,140,240,.3);color:var(--violet)">${ico('activity')}<div><strong>Este crédito ya venció y aún debe capital</strong><br><span style="font-size:11px;color:var(--txt2)">Si el cliente solo pagó intereses y vas a seguir cobrándole el mismo capital, puedes renovarlo: se cierra este crédito y se abre uno nuevo por el capital pendiente (${fmt(pl.capitalPendiente)}), con fecha de hoy.</span></div></div>
+    <div class="alert" style="background:rgba(169,140,240,.12);border:1px solid rgba(169,140,240,.3);color:var(--violet)">${ico('activity')}<div><strong>Este crédito ya venció y aún debe capital</strong><br><span style="font-size:11px;color:var(--txt2)">Si el cliente solo pagó intereses y vas a seguir cobrándole el mismo capital, puedes renovarlo: se registra el interés cobrado, se cierra este crédito y se abre uno nuevo por el capital pendiente (${fmt(pl.capitalPendiente)}), con fecha de hoy.</span></div></div>
     <button class="btn btn-full" style="margin-top:8px;background:rgba(169,140,240,.16);color:var(--violet);border:1px solid rgba(169,140,240,.4)" onclick="openDrawerRenovarPrestamo('${escJs(id)}')">${ico('activity',16)} Renovar crédito</button>
   </div>`:''}
 
@@ -2627,12 +2635,24 @@ function openDrawerRenovarPrestamo(prestamoId){
   const pl = planPrestamo(p);
   const hoy = today();
   const capitalSugerido = Math.round(pl.capitalPendiente);
+  const interesSugerido = Math.round(pl.interesPendiente);
   openDrawer(`
     <div class="drawer-title">Renovar crédito</div>
     <div class="drawer-body">
       <div class="alert" style="background:rgba(169,140,240,.12);border:1px solid rgba(169,140,240,.3);color:var(--violet);margin-bottom:16px">
         ${ico('activity')}<div><span style="font-size:12px">Este crédito${p.num_credito?' #'+p.num_credito:''} se cerrará como <strong>Renovado</strong> y se creará uno nuevo por el capital pendiente, con fecha de hoy.</span></div>
       </div>
+
+      <div class="form-group">
+        <label class="form-label">Interés cobrado en esta renovación</label>
+        <input class="form-input" id="ren-interes" type="number" value="${interesSugerido}">
+      </div>
+      <div style="font-size:11px;color:var(--txt3);margin:-8px 0 16px 2px">
+        ${interesSugerido>0
+          ? 'Se registrará como un abono de interés normal sobre el crédito actual antes de renovar, así entra en "Intereses cobrados" y tu capital libre crece por ese valor. Pon 0 si el cliente no pagó nada de interés.'
+          : 'El interés de este crédito ya está registrado (o no hay pendiente). Déjalo en 0 si no vas a cobrar nada adicional al renovar.'}
+      </div>
+
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Capital prestado *</label>
@@ -2695,6 +2715,7 @@ async function guardarRenovacion(prestamoIdViejo){
   if(!viejo) return toastErr('Préstamo original no encontrado');
   const clienteId = viejo.cliente_id;
 
+  const interesMonto = parseNum(document.getElementById('ren-interes')?.value) || 0;
   const monto  = parseNum(document.getElementById('p-monto').value);
   const tasa   = parseNum(document.getElementById('p-tasa').value);
   const cuotas = parseInt(document.getElementById('p-cuotas').value, 10);
@@ -2702,6 +2723,7 @@ async function guardarRenovacion(prestamoIdViejo){
   const fi     = document.getElementById('p-finicio').value;
   const fv     = document.getElementById('p-fvence').value;
 
+  if(!isFinite(interesMonto) || interesMonto < 0) return campoError('ren-interes','El interés cobrado no puede ser negativo');
   if(!isFinite(monto) || monto <= 0)  return campoError('p-monto','Ingresa un monto válido mayor a cero');
   if(!isFinite(tasa)  || tasa  <= 0)  return campoError('p-tasa','Ingresa una tasa válida mayor a cero');
   if(tasa > 100)                      return campoError('p-tasa','La tasa parece muy alta. Revisa el valor.');
@@ -2712,6 +2734,18 @@ async function guardarRenovacion(prestamoIdViejo){
 
   const btn = document.getElementById('btn-guardar-prestamo');
   if(btn){ if(btn.disabled) return; btn.disabled = true; btn.textContent = 'Guardando...'; }
+
+  // 1) Si se cobró interés en esta renovación, se registra como un abono normal sobre el
+  //    crédito viejo ANTES de cerrarlo — así cuenta en "Intereses cobrados" y en capital libre
+  //    exactamente igual que cualquier otro abono de interés.
+  let rInt = {ok:true, encolado:false};
+  if(interesMonto > TOL){
+    rInt = await guardarRemoto('abonos','create', {
+      prestamo_id:prestamoIdViejo, monto:interesMonto, tipo_abono:'interes',
+      fecha_abono:today(), observaciones:'Interés cobrado al renovar el crédito'
+    }, 'interés de renovación');
+    if(!rInt.ok && !rInt.encolado){ reactivar(btn,'Confirmar renovación'); return; }
+  }
 
   const calc = calcPrestamo(monto, tasa, cuotas, freq);
   const nuevo = {
@@ -2727,7 +2761,7 @@ async function guardarRenovacion(prestamoIdViejo){
   const r2 = await guardarRemoto('prestamos','update',{id:prestamoIdViejo, estado:'renovado'},'cierre del crédito renovado');
   if(!r2.ok && !r2.encolado){ reactivar(btn,'Confirmar renovación'); return; }
 
-  if(r.ok || r2.ok) await syncData(true);
+  if(rInt.ok || r.ok || r2.ok) await syncData(true);
   cerrarDrawerLimpio();
   navigate('cliente-detalle', clienteId, false);
   setTimeout(()=>toastOk('Crédito renovado correctamente'), 120);

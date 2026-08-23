@@ -916,9 +916,11 @@ function capitalDisponible(){
     DB.prestamos().forEach(p=>{
       if(p.estado === 'anulado') return;
       const pl = planPrestamo(p);
-      // Un crédito renovado no vuelve a contar como "salió plata de la caja": ese capital
-      // sigue siendo el mismo que ya estaba prestado, ahora bajo el crédito nuevo que lo reemplazó.
-      if(p.estado !== 'renovado') desembolsado += Number(p.monto_prestado)||0;
+      // El crédito viejo (aunque quede "renovado") SÍ sigue contando como capital que salió de la
+      // caja — esa plata salió una sola vez, en su fecha original, y eso no cambia por renovar.
+      // Lo que NO debe contarse otra vez es el crédito NUEVO que nace de una renovación: no es
+      // plata fresca saliendo de la caja, es el mismo capital pendiente que ya estaba afuera.
+      if(!p.renovado_de) desembolsado += Number(p.monto_prestado)||0;
       cobrado           += pl.abonado;
       interesesCobrados += pl.interesCobrado;
       capitalRecuperado += pl.capitalRecuperado;
@@ -957,8 +959,8 @@ function resumenCartera(){
       if(p.estado==='anulado') return;
       const est = estadoPrestamo(p);
       const pl  = planPrestamo(p);
-      // Igual que en capitalDisponible(): un crédito renovado no cuenta otra vez como desembolso nuevo.
-      if(p.estado!=='renovado') totalPrestado += Number(p.monto_prestado)||0;
+      // Igual que en capitalDisponible(): el crédito NUEVO de una renovación no es desembolso fresco.
+      if(!p.renovado_de) totalPrestado += Number(p.monto_prestado)||0;
       totalRecuperado   += pl.abonado;
       capitalRecuperado += pl.capitalRecuperado;
       interesesCobrados += pl.interesCobrado;
@@ -1204,7 +1206,7 @@ function serieCapital(dias){
   const eventos = [];
   DB.capital().forEach(m=>eventos.push({f:m.fecha, v:(m.tipo==='retiro'?-1:1)*(Number(m.monto)||0)}));
   DB.gastos().forEach(g=>eventos.push({f:g.fecha, v:-(Number(g.monto)||0)}));
-  DB.prestamos().forEach(p=>{ if(p.estado!=='anulado' && p.estado!=='renovado') eventos.push({f:p.fecha_inicio, v:-(Number(p.monto_prestado)||0)}); });
+  DB.prestamos().forEach(p=>{ if(p.estado!=='anulado' && !p.renovado_de) eventos.push({f:p.fecha_inicio, v:-(Number(p.monto_prestado)||0)}); });
   DB.abonos().forEach(a=>eventos.push({f:a.fecha_abono, v:(Number(a.monto)||0)}));
   const hoy = today();
   const desde = fechaMas(-(n-1), hoy);

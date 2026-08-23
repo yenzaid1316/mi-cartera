@@ -361,11 +361,19 @@ async function gsWrite(table, action, data){
 const COLA_KEY = 'cola_pendientes';
 function colaLeer(){ try{ return JSON.parse(localStorage.getItem(COLA_KEY)||'[]'); }catch(e){ return []; } }
 function colaGuardar(c){ try{ localStorage.setItem(COLA_KEY, JSON.stringify(c)); }catch(e){} }
-function colaEncolar(table, action, data){
+function colaEncolar(table, action, data, etiqueta){
   const c = colaLeer();
-  c.push({id:uid(), table, action, data, ts:Date.now()});
+  c.push({id:uid(), table, action, data, etiqueta:etiqueta||null, ts:Date.now()});
   colaGuardar(c); pintarNetbar();
   return c.length;
+}
+function colaEliminarItem(itemId){
+  colaGuardar(colaLeer().filter(function(it){ return it.id!==itemId; }));
+  pintarNetbar();
+}
+function colaVaciar(){
+  colaGuardar([]);
+  pintarNetbar();
 }
 let _colaCorriendo = false;
 async function colaProcesar(){
@@ -376,7 +384,7 @@ async function colaProcesar(){
   let ok=0, quedan=[];
   for(const item of c){
     try{ await gsWrite(item.table, item.action, item.data); ok++; }
-    catch(e){ quedan.push(item); }
+    catch(e){ quedan.push({...item, error:(e&&e.message)||'Error desconocido', intentos:(item.intentos||0)+1}); }
   }
   colaGuardar(quedan);
   _colaCorriendo = false;
@@ -393,7 +401,7 @@ async function guardarRemoto(table, action, data, etiqueta){
   }catch(e){
     const sinRed = !navigator.onLine || /networkerror|failed to fetch|sin conexión|tardó/i.test(e.message||'');
     if(sinRed){
-      colaEncolar(table, action, data);
+      colaEncolar(table, action, data, etiqueta);
       mostrarToast('Sin conexión — "'+(etiqueta||'el cambio')+'" se enviará al recuperar señal');
       return {ok:false, encolado:true, error:e};
     }
@@ -421,14 +429,97 @@ function pintarNetbar(){
   if(!navigator.onLine){
     bar.className='show off';
     bar.innerHTML = ico('wifiOff',13)+' Sin conexión'+(pend?' · '+pend+' pendiente'+(pend>1?'s':''):'')+' · datos '+haceCuanto(_syncEstado.ultimo);
+    bar.style.cursor = pend ? 'pointer' : '';
+    bar.onclick = pend ? abrirDrawerColaPendiente : null;
   } else if(pend){
     bar.className='show pend';
-    bar.innerHTML = ico('clock',13)+' '+pend+' cambio'+(pend>1?'s':'')+' por enviar';
+    bar.innerHTML = ico('clock',13)+' '+pend+' cambio'+(pend>1?'s':'')+' por enviar · toca para ver';
+    bar.style.cursor = 'pointer';
+    bar.onclick = abrirDrawerColaPendiente;
   } else {
-    bar.className=''; bar.innerHTML='';
+    bar.className=''; bar.innerHTML=''; bar.onclick=null; bar.style.cursor='';
   }
   const et = document.getElementById('sync-estado');
   if(et) et.textContent = navigator.onLine ? 'Actualizado '+haceCuanto(_syncEstado.ultimo) : 'Sin conexión';
+}
+
+// ── Ver / reintentar / descartar cambios atascados en la cola ──
+function labelTablaCola(t){
+  return {clientes:'Cliente', prestamos:'Préstamo', abonos:'Abono', gastos:'Gasto',
+    capitalMovimientos:'Movimiento de capital', cierres:'Cierre financiero',
+    capitalDistribucion:'Distribución de capital'}[t] || t;
+}
+function labelAccionCola(a){
+  return {create:'Crear', update:'Actualizar', delete:'Eliminar'}[a] || a;
+}
+function renderColaPendienteHTML(){
+  const items = colaLeer();
+  if(!items.length){
+    return '<div class="drawer-title">Cambios pendientes</div><div class="drawer-body">'+
+      '<div class="empty" style="padding:30px 10px">'+
+        '<div class="empty-title">Todo enviado</div>'+
+        '<div class="empty-sub">No hay cambios esperando por conexión</div>'+
+      '</div>'+
+      '<button class="btn btn-secondary btn-full" onclick="closeDrawer()">Cerrar</button></div>';
+  }
+  const filas = items.map(function(it){
+    const fecha = new Date(it.ts).toLocaleDateString('es-CO',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    const detalle = it.etiqueta || (labelAccionCola(it.action)+' '+labelTablaCola(it.table).toLowerCase());
+    return '<div class="card-sm" style="margin-bottom:10px">'+
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px">'+
+        '<div><div style="font-size:13px;font-weight:500">'+esc(String(detalle))+'</div>'+
+        '<div style="font-size:11px;color:var(--txt3);margin-top:2px">'+labelTablaCola(it.table)+' · '+labelAccionCola(it.action)+' · '+fecha+'</div></div>'+
+        '<button class="btn-cola-descartar" data-id="'+it.id+'" style="background:none;border:none;color:var(--red);font-size:12px;cursor:pointer;flex-shrink:0;padding:4px;white-space:nowrap">Descartar</button>'+
+      '</div>'+
+      (it.error
+        ? '<div style="font-size:11px;color:var(--red);background:rgba(239,115,115,.12);border-radius:6px;padding:6px 8px;margin-top:2px">No se pudo enviar'+(it.intentos?' ('+it.intentos+' intento'+(it.intentos>1?'s':'')+')':'')+': '+esc(it.error)+'</div>'
+        : '<div style="font-size:11px;color:var(--txt3)">Esperando conexión para enviarse</div>')+
+    '</div>';
+  }).join('');
+
+  return '<div class="drawer-title">Cambios pendientes ('+items.length+')</div>'+
+    '<div class="drawer-body">'+
+    '<p style="font-size:12px;color:var(--txt2);margin-bottom:14px">Estos cambios se hicieron sin conexión y siguen esperando enviarse a la nube. Si alguno lleva rato atascado o ya lo volviste a hacer a mano, puedes descartarlo — no se perderá nada real porque ya lo guardaste de nuevo.</p>'+
+    '<button class="btn btn-primary btn-full" id="btn-cola-reintentar" style="margin-bottom:16px">Reintentar ahora</button>'+
+    filas+
+    '<button class="btn btn-danger btn-full" id="btn-cola-vaciar" style="margin-top:6px">Vaciar toda la cola</button>'+
+    '<button class="btn btn-secondary btn-full" style="margin-top:8px" onclick="closeDrawer()">Cerrar</button>'+
+    '</div>';
+}
+function wireDrawerCola(){
+  const btnReintentar = document.getElementById('btn-cola-reintentar');
+  if(btnReintentar) btnReintentar.addEventListener('click', async function(){
+    if(!navigator.onLine){ toastErr('Sin conexión — intenta cuando tengas señal'); return; }
+    this.disabled = true; this.textContent = 'Reintentando...';
+    const n = await colaProcesar();
+    refrescarDrawerCola();
+    if(!n) toastErr('Sigue sin poder enviarse — revisa el detalle de cada cambio');
+  });
+  document.querySelectorAll('.btn-cola-descartar').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      const itemId = this.getAttribute('data-id');
+      if(!confirm('¿Descartar este cambio? No se enviará nunca a la nube.')) return;
+      colaEliminarItem(itemId);
+      refrescarDrawerCola();
+    });
+  });
+  const btnVaciar = document.getElementById('btn-cola-vaciar');
+  if(btnVaciar) btnVaciar.addEventListener('click', function(){
+    if(!confirm('¿Vaciar TODA la cola de cambios pendientes? Ningún cambio en espera se enviará. Esta acción no se puede deshacer.')) return;
+    colaVaciar();
+    refrescarDrawerCola();
+  });
+}
+function refrescarDrawerCola(){
+  const dc = document.getElementById('drawer-content');
+  if(!dc) return;
+  dc.innerHTML = renderColaPendienteHTML();
+  wireDrawerCola();
+  pintarNetbar();
+}
+function abrirDrawerColaPendiente(){
+  openDrawer(renderColaPendienteHTML());
+  wireDrawerCola();
 }
 window.addEventListener('online', function(){ pintarNetbar(); colaProcesar(); });
 window.addEventListener('offline', pintarNetbar);
@@ -765,7 +856,8 @@ function planPrestamo(p){
     const diasVencidoTotal = (p.fecha_vencimiento && hoy > p.fecha_vencimiento) ? diffDays(p.fecha_vencimiento, hoy) : 0;
     const semanasMora = Math.floor(diasVencidoTotal / 7);
     const tasaSemanalMora = (Number(p.tasa_interes_mensual)||0) / 100 / 4;
-    const recargoMora = (saldoFinal > TOL && semanasMora > 0) ? saldoFinal * tasaSemanalMora * semanasMora : 0;
+    // Un crédito renovado ya se cerró — no debe seguir sumando recargo, para eso se abrió el nuevo.
+    const recargoMora = (saldoFinal > TOL && semanasMora > 0 && p.estado !== 'renovado') ? saldoFinal * tasaSemanalMora * semanasMora : 0;
 
     return {
       cuotas, abonos,
@@ -795,10 +887,16 @@ function calcAmortizacion(p){
 function estadoPrestamo(p){
   if(!p) return 'activo';
   if(p.estado === 'anulado') return 'anulado';
+  if(p.estado === 'renovado') return 'renovado';   // se cerró para abrir un crédito nuevo por el capital pendiente
   const pl = planPrestamo(p);
   if(p.estado === 'pagado' || pl.saldo <= TOL) return 'pagado';
   if(pl.cuotasVencidas > 0) return 'mora';   // por CUOTA vencida, no por vencimiento final
   return 'activo';
+}
+
+/** Crédito que reemplazó a este (si fue renovado), o null. Se busca en vivo — no se guarda un id "de vuelta" en el viejo para no depender de tener conexión en el momento exacto de la renovación. */
+function prestamoSucesor(prestamoId){
+  return DB.prestamos().find(function(x){ return x.renovado_de === prestamoId; }) || null;
 }
 
 function saldoPrestamo(p){ return planPrestamo(p).saldo; }
@@ -818,7 +916,9 @@ function capitalDisponible(){
     DB.prestamos().forEach(p=>{
       if(p.estado === 'anulado') return;
       const pl = planPrestamo(p);
-      desembolsado      += Number(p.monto_prestado)||0;
+      // Un crédito renovado no vuelve a contar como "salió plata de la caja": ese capital
+      // sigue siendo el mismo que ya estaba prestado, ahora bajo el crédito nuevo que lo reemplazó.
+      if(p.estado !== 'renovado') desembolsado += Number(p.monto_prestado)||0;
       cobrado           += pl.abonado;
       interesesCobrados += pl.interesCobrado;
       capitalRecuperado += pl.capitalRecuperado;
@@ -857,7 +957,8 @@ function resumenCartera(){
       if(p.estado==='anulado') return;
       const est = estadoPrestamo(p);
       const pl  = planPrestamo(p);
-      totalPrestado     += Number(p.monto_prestado)||0;
+      // Igual que en capitalDisponible(): un crédito renovado no cuenta otra vez como desembolso nuevo.
+      if(p.estado!=='renovado') totalPrestado += Number(p.monto_prestado)||0;
       totalRecuperado   += pl.abonado;
       capitalRecuperado += pl.capitalRecuperado;
       interesesCobrados += pl.interesCobrado;
@@ -940,8 +1041,9 @@ const NAV_DE_PAGINA = {
 };
 let _ultimoData = null;
 
-function navigate(page, data=null, pushHistory=true){
-  if(pushHistory && currentPage !== page) pageHistory.push({page:currentPage, data:_ultimoData});
+function navigate(page, data=null, pushHistory=true, restoreScroll=0){
+  const screenAntes = document.getElementById('screen');
+  if(pushHistory && currentPage !== page) pageHistory.push({page:currentPage, data:_ultimoData, scroll: screenAntes?screenAntes.scrollTop:0});
   if(pageHistory.length > 40) pageHistory.shift();
   currentPage = page; _ultimoData = data;
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
@@ -967,6 +1069,12 @@ function navigate(page, data=null, pushHistory=true){
   else if(page === 'editar-prestamo') renderFormPrestamo(data);
   else if(pages[page]) pages[page]();
   actualizarBadgeCobros();
+
+  // Al volver atrás, restaurar el scroll donde estabas en vez de subir hasta arriba
+  if(restoreScroll){
+    const screenDespues = document.getElementById('screen');
+    if(screenDespues) screenDespues.scrollTop = restoreScroll;
+  }
 }
 
 /** Repinta la pantalla actual conservando su contexto (tras sincronizar o guardar) */
@@ -988,7 +1096,7 @@ function actualizarBadgeCobros(){
 
 function goBack(){
   const prev = pageHistory.pop();
-  if(prev && prev.page) navigate(prev.page, prev.data, false);
+  if(prev && prev.page) navigate(prev.page, prev.data, false, prev.scroll||0);
   else navigate('dashboard', null, false);
 }
 
@@ -1011,6 +1119,7 @@ function renderMas(){
       {ic:'sheet',    n:'Exportar a Excel',    d:'Cinco reportes en CSV', a:"openDrawerExportar()"},
     ]},
     {t:'Datos', items:[
+      {ic:'clock',    n:'Cambios pendientes', d:pend? pend+' cambio'+(pend>1?'s':'')+' esperando enviarse — revisar' : 'Todo enviado y sincronizado', a:"abrirDrawerColaPendiente()"},
       {ic:'upload',   n:'Importar clientes', d:'Carga masiva desde una plantilla', a:"navigate('importar')"},
       {ic:'upload',   n:'Importar abonos',   d:'Carga masiva de pagos por # de crédito', a:"navigate('importar_abonos')"},
       {ic:'shield',   n:'Copia de seguridad', d:pend? pend+' cambio(s) sin enviar' : 'Respaldar y restaurar todo', a:"openDrawerBackup()"},
@@ -1095,7 +1204,7 @@ function serieCapital(dias){
   const eventos = [];
   DB.capital().forEach(m=>eventos.push({f:m.fecha, v:(m.tipo==='retiro'?-1:1)*(Number(m.monto)||0)}));
   DB.gastos().forEach(g=>eventos.push({f:g.fecha, v:-(Number(g.monto)||0)}));
-  DB.prestamos().forEach(p=>{ if(p.estado!=='anulado') eventos.push({f:p.fecha_inicio, v:-(Number(p.monto_prestado)||0)}); });
+  DB.prestamos().forEach(p=>{ if(p.estado!=='anulado' && p.estado!=='renovado') eventos.push({f:p.fecha_inicio, v:-(Number(p.monto_prestado)||0)}); });
   DB.abonos().forEach(a=>eventos.push({f:a.fecha_abono, v:(Number(a.monto)||0)}));
   const hoy = today();
   const desde = fechaMas(-(n-1), hoy);
@@ -1408,7 +1517,11 @@ function openDrawerDesgloseCapital(){
 // ═══════════════════════════════════════
 // CLIENTES
 // ═══════════════════════════════════════
-function buildClientesList(query){
+var _clientesFiltroActual = 'con_saldo';
+var _clientesUltimoConteo = 0;
+
+function buildClientesList(query, filtro){
+  filtro = filtro || _clientesFiltroActual || 'con_saldo';
   // Solo construye y retorna el HTML de la lista — no toca el input
   // Filtrar clientes eliminados (estado inactivo)
   let clientes = DB.clientes().filter(function(c){ return c.estado !== 'inactivo'; });
@@ -1417,29 +1530,42 @@ function buildClientesList(query){
            (c.telefono||'').includes(query);
   });
 
-  if(clientes.length === 0){
+  // Préstamos activos y saldo de cada cliente — se necesitan para filtrar y para el conteo que se muestra
+  let listaConDatos = clientes.map(function(c){
+    const ps = DB.prestamos().filter(function(p){ return p.cliente_id===c.id; });
+    const activos = ps.filter(function(p){ return ['activo','mora'].includes(estadoPrestamo(p)); });
+    const saldoTotal = activos.reduce(function(s,p){ return s+saldoPrestamo(p); },0);
+    return {c, activos, saldoTotal};
+  });
+
+  if(filtro === 'con_saldo') listaConDatos = listaConDatos.filter(function(x){ return x.saldoTotal > TOL; });
+  else if(filtro === 'pagados') listaConDatos = listaConDatos.filter(function(x){ return x.saldoTotal <= TOL; });
+  // 'todos' no filtra
+
+  _clientesUltimoConteo = listaConDatos.length;
+
+  if(listaConDatos.length === 0){
     return '<div class="empty">' +
       '<svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="var(--txt3)" stroke-width="1.2"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>' +
       '<div class="empty-title">Sin resultados</div>' +
-      '<div class="empty-sub">' + (query ? 'Ningún cliente coincide' : 'Toca el botón + para agregar') + '</div>' +
+      '<div class="empty-sub">' + (query ? 'Ningún cliente coincide' : filtro==='con_saldo' ? 'Ningún cliente tiene saldo pendiente' : 'Toca el botón + para agregar') + '</div>' +
     '</div>';
   }
 
   let html = '<div class="item-list">';
-  clientes.forEach(function(c){
-    const ps = DB.prestamos().filter(function(p){ return p.cliente_id===c.id; });
-    const activos = ps.filter(function(p){ return ['activo','mora'].includes(estadoPrestamo(p)); });
-    const saldoTotal = activos.reduce(function(s,p){ return s+saldoPrestamo(p); },0);
+  listaConDatos.forEach(function(x){
+    const c = x.c, activos = x.activos, saldoTotal = x.saldoTotal;
     const hasMora = activos.some(function(p){ return estadoPrestamo(p)==='mora'; });
     const badge = hasMora
       ? '<span class="badge badge-red">Mora</span>': activos.length > 0
         ? '<span class="badge badge-amber">Activo</span>': '<span class="badge badge-gray">Al día</span>';
+    const prestamosTxt = activos.length===0 ? 'Sin préstamos activos' : activos.length + ' préstamo' + (activos.length>1?'s':'');
     html +=
       '<div class="item" data-cid="' + c.id + '">' +
         '<div class="item-avatar">' + initials(c.nombre) + '</div>' +
         '<div class="item-body">' +
           '<div class="item-name">' + esc(c.nombre) + '</div>' +
-          '<div class="item-detail">' + (c.telefono||'Sin teléfono') + ' · ' + c.tipo_cliente + '</div>' +
+          '<div class="item-detail">' + prestamosTxt + ' · ' + c.tipo_cliente + '</div>' +
         '</div>' +
         '<div class="item-right">' +
           '<div class="item-amount" style="color:' + (saldoTotal>0?'var(--txt)':'var(--txt3)') + '">' + fmt(saldoTotal) + '</div>' +
@@ -1448,6 +1574,15 @@ function buildClientesList(query){
       '</div>';
   });
   return html + '</div>';
+}
+
+function actualizarContadorClientes(){
+  const cnt = document.getElementById('clientes-count');
+  if(!cnt) return;
+  const n = _clientesUltimoConteo;
+  cnt.textContent = _clientesFiltroActual==='con_saldo' ? n + ' con saldo'
+    : _clientesFiltroActual==='pagados' ? n + (n===1?' pagado':' pagados')
+    : n + ' en total';
 }
 
 function attachClienteListeners(){
@@ -1483,25 +1618,41 @@ function renderClientes(query){
           '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>' +
           '<input class="form-input" id="search-clientes" placeholder="Buscar cliente..." style="width:100%">' +
         '</div>' +
+        '<div style="padding:0 20px 0"><div class="toggle-group">' +
+          '<button class="toggle-btn'+(_clientesFiltroActual==='con_saldo'?' active':'')+'" data-cfiltro="con_saldo">Con saldo</button>' +
+          '<button class="toggle-btn'+(_clientesFiltroActual==='pagados'?' active':'')+'" data-cfiltro="pagados">Pagados</button>' +
+          '<button class="toggle-btn'+(_clientesFiltroActual==='todos'?' active':'')+'" data-cfiltro="todos">Todos</button>' +
+        '</div></div>' +
         '<div class="section" id="clientes-lista"></div>' +
       '</div>';
 
     // Evento del buscador: solo actualiza la lista, NO rerenderiza todo
     document.getElementById('search-clientes').addEventListener('input', function(){
       const q = this.value;
-      document.getElementById('clientes-lista').innerHTML = buildClientesList(q);
+      document.getElementById('clientes-lista').innerHTML = buildClientesList(q, _clientesFiltroActual);
       attachClienteListeners();
+      actualizarContadorClientes();
+    });
+
+    // Filtro por saldo (Con saldo / Pagados / Todos)
+    document.querySelectorAll('.toggle-btn[data-cfiltro]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        document.querySelectorAll('.toggle-btn[data-cfiltro]').forEach(function(b){ b.classList.remove('active'); });
+        this.classList.add('active');
+        _clientesFiltroActual = this.getAttribute('data-cfiltro');
+        const q = document.getElementById('search-clientes')?.value||'';
+        document.getElementById('clientes-lista').innerHTML = buildClientesList(q, _clientesFiltroActual);
+        attachClienteListeners();
+        actualizarContadorClientes();
+      });
     });
   }
 
   // Siempre actualizar la lista (primera vez y al volver de crear cliente)
   const q = query || (document.getElementById('search-clientes') ? document.getElementById('search-clientes').value : '');
-  document.getElementById('clientes-lista').innerHTML = buildClientesList(q);
+  document.getElementById('clientes-lista').innerHTML = buildClientesList(q, _clientesFiltroActual);
   attachClienteListeners();
-
-  // Actualizar contador
-  const cnt = document.getElementById('clientes-count');
-  if(cnt) cnt.textContent = DB.clientes().filter(function(c){return c.estado!=='inactivo';}).length + ' activos';
+  actualizarContadorClientes();
 
   // Botón importar
   const btnImp = document.getElementById('btn-importar-clientes');
@@ -1594,8 +1745,8 @@ function renderClienteDetalle(id){
   // Llenar lista de préstamos del cliente con eventos limpios
   const listaEl = document.getElementById('lista-prestamos-cliente');
   if(listaEl && ps.length > 0){
-    const coloresP = {activo:'var(--amber)',mora:'var(--red)',pagado:'var(--green)',anulado:'var(--txt3)'};
-    const labelsP  = {activo:'Activo',mora:'Mora',pagado:'Pagado',anulado:'Anulado'};
+    const coloresP = {activo:'var(--amber)',mora:'var(--red)',pagado:'var(--green)',anulado:'var(--txt3)',renovado:'var(--violet)'};
+    const labelsP  = {activo:'Activo',mora:'Mora',pagado:'Pagado',anulado:'Anulado',renovado:'Renovado'};
     ps.forEach(function(p){
       const est   = estadoPrestamo(p);
       const saldo = saldoPrestamo(p);
@@ -1647,15 +1798,16 @@ function renderPrestamos(filtro='todos'){
   const ps = DB.prestamos();
   const clientes = DB.clientes();
   const filtros = {
-    'todos':   ps,
-    'activos': ps.filter(p=>estadoPrestamo(p)==='activo'),
-    'mora':    ps.filter(p=>estadoPrestamo(p)==='mora'),
-    'pagados': ps.filter(p=>estadoPrestamo(p)==='pagado'),
+    'todos':     ps,
+    'activos':   ps.filter(p=>estadoPrestamo(p)==='activo'),
+    'mora':      ps.filter(p=>estadoPrestamo(p)==='mora'),
+    'pagados':   ps.filter(p=>estadoPrestamo(p)==='pagado'),
+    'renovados': ps.filter(p=>estadoPrestamo(p)==='renovado'),
   };
   const lista = filtros[filtro] || ps;
 
-  const colores = {activo:'var(--amber)',mora:'var(--red)',pagado:'var(--green)',anulado:'var(--txt3)'};
-  const labels  = {activo:'Activo',mora:'Mora',pagado:'Pagado',anulado:'Anulado'};
+  const colores = {activo:'var(--amber)',mora:'var(--red)',pagado:'var(--green)',anulado:'var(--txt3)',renovado:'var(--violet)'};
+  const labels  = {activo:'Activo',mora:'Mora',pagado:'Pagado',anulado:'Anulado',renovado:'Renovado'};
 
   let listaHTML = '';
   if(lista.length === 0){
@@ -1714,7 +1866,7 @@ function renderPrestamos(filtro='todos'){
       '</div>' +
       '<div style="padding:0 20px 0">' +
         '<div class="toggle-group">' +
-          tabBtn('todos','Todos') + tabBtn('activos','Activos') + tabBtn('mora','Mora') + tabBtn('pagados','Pagados') +
+          tabBtn('todos','Todos') + tabBtn('activos','Activos') + tabBtn('mora','Mora') + tabBtn('pagados','Pagados') + tabBtn('renovados','Renovados') +
         '</div>' +
       '</div>' +
       '<div class="section" id="prest-lista">' + listaHTML + '</div>' +
@@ -1723,6 +1875,8 @@ function renderPrestamos(filtro='todos'){
   // Eventos
   document.querySelectorAll('.toggle-btn[data-filtro]').forEach(function(btn){
     btn.addEventListener('click', function(){
+      document.querySelectorAll('.toggle-btn[data-filtro]').forEach(function(b){ b.classList.remove('active'); });
+      this.classList.add('active');
       _prestFiltroActual = this.getAttribute('data-filtro');
       _prestQueryActual = document.getElementById('search-prestamos')?.value||'';
       filtrarListaPrestamos();
@@ -1744,12 +1898,12 @@ function filtrarListaPrestamos(query){
   const q = (_prestQueryActual||'').toLowerCase();
   const ps = DB.prestamos();
   const clientes = DB.clientes();
-  const colores = {activo:'var(--amber)',mora:'var(--red)',pagado:'var(--green)',anulado:'var(--txt3)'};
-  const labels  = {activo:'Activo',mora:'Mora',pagado:'Pagado',anulado:'Anulado'};
+  const colores = {activo:'var(--amber)',mora:'var(--red)',pagado:'var(--green)',anulado:'var(--txt3)',renovado:'var(--violet)'};
+  const labels  = {activo:'Activo',mora:'Mora',pagado:'Pagado',anulado:'Anulado',renovado:'Renovado'};
 
   let lista = ps.filter(function(p){
     if(_prestFiltroActual !== 'todos'){
-      const mapa = {activos:'activo',mora:'mora',pagados:'pagado'};
+      const mapa = {activos:'activo',mora:'mora',pagados:'pagado',renovados:'renovado'};
       if(estadoPrestamo(p) !== (mapa[_prestFiltroActual]||_prestFiltroActual)) return false;
     }
     if(q){
@@ -1809,9 +1963,12 @@ function renderPrestamoDetalle(id){
   const abonos = DB.abonos().filter(a=>a.prestamo_id===id).sort((a,b)=>new Date(b.fecha_abono)-new Date(a.fecha_abono));
   const totalAbonado = abonos.reduce((s,a)=>s+a.monto,0);
   const pct = Math.min(100, Math.round((totalAbonado/p.total_a_pagar)*100));
-  const colores={'activo':'var(--amber)','mora':'var(--red)','pagado':'var(--green)','anulado':'var(--txt3)'};
-  const labels={'activo':'Activo','mora':'Mora','pagado':'Pagado','anulado':'Anulado'};
+  const colores={'activo':'var(--amber)','mora':'var(--red)','pagado':'var(--green)','anulado':'var(--txt3)','renovado':'var(--violet)'};
+  const labels={'activo':'Activo','mora':'Mora','pagado':'Pagado','anulado':'Anulado','renovado':'Renovado'};
   const diasMora = est==='mora'?diffDays(p.fecha_vencimiento,today()):0;
+  const puedeRenovar = est!=='pagado' && est!=='anulado' && est!=='renovado' && today() > p.fecha_vencimiento && pl.capitalPendiente > TOL;
+  const sucesor = est==='renovado' ? prestamoSucesor(id) : null;
+  const predecesor = p.renovado_de ? DB.prestamos().find(x=>x.id===p.renovado_de) : null;
 
   const fab = document.querySelector('.fab');
   if(fab) fab.remove();
@@ -1849,8 +2006,21 @@ function renderPrestamoDetalle(id){
     </div>
   </div>
 
+  ${sucesor?`<div style="padding:0 20px;margin-bottom:16px">
+    <div class="alert" style="background:rgba(169,140,240,.12);border:1px solid rgba(169,140,240,.3);color:var(--violet)">${ico('activity')}<div><strong>Este crédito fue renovado</strong><br><span style="font-size:11px;color:var(--txt2)">Se cerró el ${fmtDate(sucesor.fecha_inicio)} y su capital pendiente continuó en el crédito nuevo${sucesor.num_credito?' #'+sucesor.num_credito:''}.</span></div></div>
+    <button class="btn btn-secondary btn-full" style="margin-top:8px" onclick="navigate('prestamo-detalle','${escJs(sucesor.id)}')">Ver crédito nuevo${sucesor.num_credito?' #'+sucesor.num_credito:''}</button>
+  </div>`:''}
+  ${predecesor?`<div style="padding:0 20px;margin-bottom:16px">
+    <div class="alert" style="background:rgba(169,140,240,.12);border:1px solid rgba(169,140,240,.3);color:var(--violet)">${ico('activity')}<div><strong>Renovación de crédito${predecesor.num_credito?' #'+predecesor.num_credito:''}</strong><br><span style="font-size:11px;color:var(--txt2)">Este crédito continúa el capital que quedó pendiente del anterior.</span></div></div>
+    <button class="btn btn-secondary btn-full" style="margin-top:8px" onclick="navigate('prestamo-detalle','${escJs(predecesor.id)}')">Ver crédito anterior${predecesor.num_credito?' #'+predecesor.num_credito:''}</button>
+  </div>`:''}
+
   ${pl.recargoMora>TOL?`<div style="padding:0 20px;margin-bottom:16px">
     <div class="alert alert-red">${ico('alert')}<div><strong>Recargo por mora sugerido: ${fmt(pl.recargoMora)}</strong><br><span style="font-size:11px">${pl.semanasMora} semana${pl.semanasMora>1?'s':''} vencida${pl.semanasMora>1?'s':''} desde el vencimiento del préstamo (${fmtDate(p.fecha_vencimiento)}) · ${(pl.tasaSemanalMora*100).toFixed(2)}% por semana sobre el saldo · No se cobra solo, tú decides si lo incluyes al registrar el abono</span></div></div>
+  </div>`:''}
+  ${puedeRenovar?`<div style="padding:0 20px;margin-bottom:16px">
+    <div class="alert" style="background:rgba(169,140,240,.12);border:1px solid rgba(169,140,240,.3);color:var(--violet)">${ico('activity')}<div><strong>Este crédito ya venció y aún debe capital</strong><br><span style="font-size:11px;color:var(--txt2)">Si el cliente solo pagó intereses y vas a seguir cobrándole el mismo capital, puedes renovarlo: se cierra este crédito y se abre uno nuevo por el capital pendiente (${fmt(pl.capitalPendiente)}), con fecha de hoy.</span></div></div>
+    <button class="btn btn-full" style="margin-top:8px;background:rgba(169,140,240,.16);color:var(--violet);border:1px solid rgba(169,140,240,.4)" onclick="openDrawerRenovarPrestamo('${escJs(id)}')">${ico('activity',16)} Renovar crédito</button>
   </div>`:''}
 
   <div style="padding:0 20px;margin-bottom:16px">
@@ -1882,7 +2052,7 @@ function renderPrestamoDetalle(id){
     </div>
   </div>
 
-  ${est!=='pagado'&&est!=='anulado'&&puedoEscribir()?`
+  ${est!=='pagado'&&est!=='anulado'&&est!=='renovado'&&puedoEscribir()?`
   <div style="padding:0 20px;margin-bottom:8px;display:flex;gap:8px">
     <button class="btn btn-success btn-full" onclick="openDrawerNuevoAbono('${id}')">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -2422,6 +2592,118 @@ async function guardarPrestamo(clienteId){
   cerrarDrawerLimpio();
   navigate('cliente-detalle', clienteId, false);
   if(r.ok) setTimeout(()=>toastOk('Préstamo creado'), 120);
+}
+
+function openDrawerRenovarPrestamo(prestamoId){
+  const p = DB.prestamos().find(x=>x.id===prestamoId);
+  if(!p) return toastErr('Préstamo no encontrado');
+  const pl = planPrestamo(p);
+  const hoy = today();
+  const capitalSugerido = Math.round(pl.capitalPendiente);
+  openDrawer(`
+    <div class="drawer-title">Renovar crédito</div>
+    <div class="drawer-body">
+      <div class="alert" style="background:rgba(169,140,240,.12);border:1px solid rgba(169,140,240,.3);color:var(--violet);margin-bottom:16px">
+        ${ico('activity')}<div><span style="font-size:12px">Este crédito${p.num_credito?' #'+p.num_credito:''} se cerrará como <strong>Renovado</strong> y se creará uno nuevo por el capital pendiente, con fecha de hoy.</span></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Capital prestado *</label>
+          <input class="form-input" id="p-monto" type="number" value="${capitalSugerido}" oninput="calcPreview()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tasa fija mensual % *</label>
+          <input class="form-input" id="p-tasa" type="number" value="${p.tasa_interes_mensual}" step="0.5" oninput="calcPreview()">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">N° cuotas *</label>
+          <input class="form-input" id="p-cuotas" type="number" value="${p.num_cuotas}" min="1" max="36" oninput="calcPreview()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Frecuencia</label>
+          <select class="form-input" id="p-freq" onchange="calcPreview()">
+            <option value="30"${Number(p.frecuencia_cobro)===30?' selected':''}>Mensual (30d)</option>
+            <option value="15"${Number(p.frecuencia_cobro)===15?' selected':''}>Quincenal (15d)</option>
+            <option value="7"${Number(p.frecuencia_cobro)===7?' selected':''}>Semanal (7d)</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Fecha inicio *</label>
+          <input class="form-input" id="p-finicio" type="date" value="${hoy}" oninput="calcPreview()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Fecha vencimiento *</label>
+          <input class="form-input" id="p-fvence" type="date" value="${hoy}" oninput="calcPreview()">
+        </div>
+      </div>
+
+      <div id="preview-prestamo" style="background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r2);padding:14px;margin-bottom:16px;display:none">
+        <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Vista previa</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center">
+          <div><div style="font-size:10px;color:var(--txt3);margin-bottom:3px">Interés total</div><div id="prev-int" style="font-size:15px;font-weight:500;color:var(--gold)">—</div></div>
+          <div><div style="font-size:10px;color:var(--txt3);margin-bottom:3px">Total a pagar</div><div id="prev-total" style="font-size:15px;font-weight:500">—</div></div>
+          <div><div style="font-size:10px;color:var(--txt3);margin-bottom:3px">Valor cuota</div><div id="prev-cuota" style="font-size:15px;font-weight:500">—</div></div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Observaciones</label>
+        <input class="form-input" id="p-obs" value="Renovación del crédito${p.num_credito?' #'+p.num_credito:''}" placeholder="Notas del préstamo...">
+      </div>
+      <button class="btn btn-primary btn-full" id="btn-guardar-prestamo">Confirmar renovación</button>
+    </div>
+  `);
+  setTimeout(calcPreview, 50);
+
+  const btnP = document.getElementById('btn-guardar-prestamo');
+  if(btnP) btnP.addEventListener('click', function(){ guardarRenovacion(prestamoId); });
+}
+
+async function guardarRenovacion(prestamoIdViejo){
+  const viejo = DB.prestamos().find(x=>x.id===prestamoIdViejo);
+  if(!viejo) return toastErr('Préstamo original no encontrado');
+  const clienteId = viejo.cliente_id;
+
+  const monto  = parseNum(document.getElementById('p-monto').value);
+  const tasa   = parseNum(document.getElementById('p-tasa').value);
+  const cuotas = parseInt(document.getElementById('p-cuotas').value, 10);
+  const freq   = parseInt(document.getElementById('p-freq').value, 10) || 30;
+  const fi     = document.getElementById('p-finicio').value;
+  const fv     = document.getElementById('p-fvence').value;
+
+  if(!isFinite(monto) || monto <= 0)  return campoError('p-monto','Ingresa un monto válido mayor a cero');
+  if(!isFinite(tasa)  || tasa  <= 0)  return campoError('p-tasa','Ingresa una tasa válida mayor a cero');
+  if(tasa > 100)                      return campoError('p-tasa','La tasa parece muy alta. Revisa el valor.');
+  if(!isFinite(cuotas)|| cuotas < 1 || cuotas > 60) return campoError('p-cuotas','El número de cuotas debe estar entre 1 y 60');
+  if(!fi)                             return campoError('p-finicio','Falta la fecha de inicio');
+  if(!fv)                             return campoError('p-fvence','Falta la fecha de vencimiento');
+  if(fv <= fi)                        return campoError('p-fvence','El vencimiento debe ser posterior al inicio');
+
+  const btn = document.getElementById('btn-guardar-prestamo');
+  if(btn){ if(btn.disabled) return; btn.disabled = true; btn.textContent = 'Guardando...'; }
+
+  const calc = calcPrestamo(monto, tasa, cuotas, freq);
+  const nuevo = {
+    cliente_id:clienteId, monto_prestado:monto, tasa_interes_mensual:tasa,
+    frecuencia_cobro:freq, num_cuotas:cuotas,
+    valor_cuota:calc.valorCuota, interes_total:calc.intTotal, total_a_pagar:calc.total,
+    fecha_inicio:fi, fecha_vencimiento:fv, estado:'activo', renovado_de:prestamoIdViejo,
+    observaciones:(document.getElementById('p-obs').value||'').trim()
+  };
+  const r = await guardarRemoto('prestamos','create',nuevo,'renovación de crédito');
+  if(!r.ok && !r.encolado){ reactivar(btn,'Confirmar renovación'); return; }
+
+  const r2 = await guardarRemoto('prestamos','update',{id:prestamoIdViejo, estado:'renovado'},'cierre del crédito renovado');
+  if(!r2.ok && !r2.encolado){ reactivar(btn,'Confirmar renovación'); return; }
+
+  if(r.ok || r2.ok) await syncData(true);
+  cerrarDrawerLimpio();
+  navigate('cliente-detalle', clienteId, false);
+  setTimeout(()=>toastOk('Crédito renovado correctamente'), 120);
 }
 
 function openDrawerNuevoAbono(prestamoId){
@@ -3797,9 +4079,23 @@ function getMovimientosTodos(){
       obs: a.observaciones||''});
   });
 
-  // Préstamos desembolsados
+  // Préstamos desembolsados — una renovación no es dinero nuevo que salió de la caja
+  // (es el mismo capital del crédito anterior), así que se muestra aparte, sin contar en Entradas/Salidas.
   prestamos.forEach(function(p){
     const c = clientes.find(function(x){ return x.id===p.cliente_id; });
+    if(p.renovado_de){
+      movs.push({
+        fecha: p.fecha_inicio,
+        tipo: 'prestamo',
+        tipoLabel: 'Renovación',
+        descripcion: 'Renovación de crédito a ' + (c?c.nombre:'—') + ' · ' + p.tasa_interes_mensual + '% fijo mensual',
+        monto: p.monto_prestado,
+        signo: '',
+        color: 'var(--violet)',
+        ref: p.id,
+        obs: p.observaciones||''});
+      return;
+    }
     movs.push({
       fecha: p.fecha_inicio,
       tipo: 'prestamo',
@@ -3916,7 +4212,7 @@ function exportarMovimientosCSV(){
 
   const rows = [['Fecha','Tipo','Descripción','Monto','Entrada/Salida','Observaciones']];
   movs.forEach(function(m){
-    rows.push([m.fecha, m.tipoLabel, m.descripcion, m.monto, m.signo==='+' ? 'Entrada':'Salida', m.obs]);
+    rows.push([m.fecha, m.tipoLabel, m.descripcion, m.monto, m.signo==='+' ? 'Entrada' : m.signo==='−' ? 'Salida' : 'Informativo', m.obs]);
   });
   // Separador ";" en vez de "," — con Excel en español, la región usa "," como separador decimal
   // y espera ";" entre columnas; con "," el archivo entero cae en una sola columna al abrirlo.
@@ -3932,7 +4228,7 @@ function exportarMovimientosCSV(){
 /** Fila de un movimiento dentro del PDF: descripción + monto en la primera línea, tipo/observación en la segunda. */
 function pdfFilaMovimiento(doc, y, m){
   const desc = m.descripcion.length>44 ? m.descripcion.slice(0,43)+'…' : m.descripcion;
-  const colMonto = m.signo==='+' ? [45,122,82] : [140,43,43]; // verde-oscuro / rojo-oscuro, legibles sobre fondo blanco
+  const colMonto = m.signo==='+' ? [45,122,82] : m.signo==='−' ? [140,43,43] : PDF_COL.goldLabel; // verde-oscuro / rojo-oscuro / neutro (ej. renovación), legibles sobre fondo blanco
   doc.setFont('helvetica','bold');
   doc.setFontSize(8.5);
   doc.setTextColor.apply(doc, PDF_COL.valueTxt);
@@ -4994,7 +5290,7 @@ function renderFormPrestamo(prestamoId){
   const estS = document.createElement('select');
   estS.id='ep-estado';
   estS.style.cssText = 'width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--txt);font-size:15px;padding:12px 14px;box-sizing:border-box;cursor:pointer';
-  ['activo','mora','pagado','anulado'].forEach(function(s){
+  ['activo','mora','pagado','anulado','renovado'].forEach(function(s){
     const opt = document.createElement('option');
     opt.value=s; opt.textContent=s.charAt(0).toUpperCase()+s.slice(1);
     if(s===p.estado) opt.selected=true;

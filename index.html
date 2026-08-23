@@ -1736,18 +1736,35 @@ function renderClienteDetalle(id){
   <div class="section">
     <div class="section-title" style="margin-bottom:10px">Préstamos</div>
     ${ps.length===0?`<div class="card-sm" style="text-align:center;color:var(--txt3);font-size:13px;padding:20px">Sin préstamos registrados</div>`:`
+    <div class="toggle-group" style="margin-bottom:12px">
+      <button class="toggle-btn active" data-pcfiltro="activos">Activos</button>
+      <button class="toggle-btn" data-pcfiltro="pagados">Pagados</button>
+      <button class="toggle-btn" data-pcfiltro="todos">Todos</button>
+    </div>
     <div class="item-list" id="lista-prestamos-cliente"></div>`}
   </div>
 
   ${c.observaciones?`<div class="section"><div class="card-sm" style="font-size:var(--f3);color:var(--txt2);display:flex;gap:8px">${ico('file',15)}<span>${esc(c.observaciones)}</span></div></div>`:''}
 </div>`;
 
-  // Llenar lista de préstamos del cliente con eventos limpios
-  const listaEl = document.getElementById('lista-prestamos-cliente');
-  if(listaEl && ps.length > 0){
+  // Llenar lista de préstamos del cliente con eventos limpios, con filtro Activos/Pagados/Todos
+  const filtrosPC = {
+    activos: ps.filter(function(p){ return ['activo','mora'].includes(estadoPrestamo(p)); }),
+    pagados: ps.filter(function(p){ return estadoPrestamo(p)==='pagado'; }),
+    todos: ps
+  };
+  function pintarListaPrestamosCliente(filtro){
+    const listaEl = document.getElementById('lista-prestamos-cliente');
+    if(!listaEl) return;
+    listaEl.innerHTML = '';
+    const lista = filtrosPC[filtro] || ps;
+    if(lista.length === 0){
+      listaEl.innerHTML = '<div class="card-sm" style="text-align:center;color:var(--txt3);font-size:13px;padding:20px">Sin préstamos en este filtro</div>';
+      return;
+    }
     const coloresP = {activo:'var(--amber)',mora:'var(--red)',pagado:'var(--green)',anulado:'var(--txt3)',renovado:'var(--violet)'};
     const labelsP  = {activo:'Activo',mora:'Mora',pagado:'Pagado',anulado:'Anulado',renovado:'Renovado'};
-    ps.forEach(function(p){
+    lista.forEach(function(p){
       const est   = estadoPrestamo(p);
       const saldo = saldoPrestamo(p);
       const col   = coloresP[est]||'var(--txt3)';
@@ -1767,6 +1784,16 @@ function renderClienteDetalle(id){
         '</div>';
       div.addEventListener('click', (function(pid){ return function(){ navigate('prestamo-detalle', pid); }; })(p.id));
       listaEl.appendChild(div);
+    });
+  }
+  if(ps.length > 0){
+    pintarListaPrestamosCliente('activos');
+    document.querySelectorAll('.toggle-btn[data-pcfiltro]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        document.querySelectorAll('.toggle-btn[data-pcfiltro]').forEach(function(b){ b.classList.remove('active'); });
+        this.classList.add('active');
+        pintarListaPrestamosCliente(this.getAttribute('data-pcfiltro'));
+      });
     });
   }
 

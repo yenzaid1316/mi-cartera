@@ -913,22 +913,25 @@ function capitalDisponible(){
     const gastosTotal = DB.gastos().reduce((s,g)=>s+(Number(g.monto)||0),0);
 
     let desembolsado=0, cobrado=0, interesesCobrados=0, capitalRecuperado=0, capitalEnCalle=0;
+    // Capital que "regresó" a la caja solo en el papel al renovar un crédito: el crédito viejo se
+    // cierra y su capital pendiente sale otra vez en el crédito nuevo. Se contabiliza como retorno
+    // para que ese mismo capital no se reste dos veces de la caja. Se detecta por el estado del
+    // crédito viejo (columna que sí existe en la hoja), no por un vínculo entre los dos créditos.
+    let rolloverCapital=0;
     DB.prestamos().forEach(p=>{
       if(p.estado === 'anulado') return;
       const pl = planPrestamo(p);
-      // El crédito viejo (aunque quede "renovado") SÍ sigue contando como capital que salió de la
-      // caja — esa plata salió una sola vez, en su fecha original, y eso no cambia por renovar.
-      // Lo que NO debe contarse otra vez es el crédito NUEVO que nace de una renovación: no es
-      // plata fresca saliendo de la caja, es el mismo capital pendiente que ya estaba afuera.
-      if(!p.renovado_de) desembolsado += Number(p.monto_prestado)||0;
+      desembolsado      += Number(p.monto_prestado)||0;
       cobrado           += pl.abonado;
       interesesCobrados += pl.interesCobrado;
       capitalRecuperado += pl.capitalRecuperado;
+      if(p.estado === 'renovado') rolloverCapital += pl.capitalPendiente;
       if(estadoPrestamo(p)==='activo' || estadoPrestamo(p)==='mora') capitalEnCalle += pl.capitalPendiente;
     });
 
     // Caja real: lo que entró menos lo que salió. Ya NO ignora los abonos recibidos.
-    const libre = inyectado + cobrado - desembolsado - gastosTotal;
+    // rolloverCapital neutraliza la salida duplicada del capital que se renovó.
+    const libre = inyectado + cobrado + rolloverCapital - desembolsado - gastosTotal;
     const patrimonio = inyectado + interesesCobrados - gastosTotal;   // capital propio total
     const pctUtilizado = (capitalEnCalle + Math.max(0,libre)) > 0
       ? Math.min(100, Math.round((capitalEnCalle/(capitalEnCalle+Math.max(0,libre)))*100)) : 0;
@@ -959,8 +962,9 @@ function resumenCartera(){
       if(p.estado==='anulado') return;
       const est = estadoPrestamo(p);
       const pl  = planPrestamo(p);
-      // Igual que en capitalDisponible(): el crédito NUEVO de una renovación no es desembolso fresco.
-      if(!p.renovado_de) totalPrestado += Number(p.monto_prestado)||0;
+      // "Total prestado" es una estadística histórica: el crédito renovado ya fue reemplazado por
+      // el nuevo, así que se cuenta el de la cadena vigente y no los dos por el mismo capital.
+      if(p.estado!=='renovado') totalPrestado += Number(p.monto_prestado)||0;
       totalRecuperado   += pl.abonado;
       capitalRecuperado += pl.capitalRecuperado;
       interesesCobrados += pl.interesCobrado;
@@ -1206,7 +1210,16 @@ function serieCapital(dias){
   const eventos = [];
   DB.capital().forEach(m=>eventos.push({f:m.fecha, v:(m.tipo==='retiro'?-1:1)*(Number(m.monto)||0)}));
   DB.gastos().forEach(g=>eventos.push({f:g.fecha, v:-(Number(g.monto)||0)}));
-  DB.prestamos().forEach(p=>{ if(p.estado!=='anulado' && !p.renovado_de) eventos.push({f:p.fecha_inicio, v:-(Number(p.monto_prestado)||0)}); });
+  DB.prestamos().forEach(p=>{
+    if(p.estado==='anulado') return;
+    eventos.push({f:p.fecha_inicio, v:-(Number(p.monto_prestado)||0)});
+    // Al renovar, el capital pendiente del crédito viejo vuelve a la caja en el papel y sale otra
+    // vez en el crédito nuevo: sin este retorno el mismo capital se restaría dos veces.
+    if(p.estado==='renovado'){
+      const suc = prestamoSucesor(p.id);
+      eventos.push({f:(suc&&suc.fecha_inicio)||p.fecha_vencimiento||p.fecha_inicio, v:planPrestamo(p).capitalPendiente});
+    }
+  });
   DB.abonos().forEach(a=>eventos.push({f:a.fecha_abono, v:(Number(a.monto)||0)}));
   const hoy = today();
   const desde = fechaMas(-(n-1), hoy);
@@ -5353,7 +5366,12 @@ function renderFormPrestamo(prestamoId){
   const estS = document.createElement('select');
   estS.id='ep-estado';
   estS.style.cssText = 'width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--txt);font-size:15px;padding:12px 14px;box-sizing:border-box;cursor:pointer';
-  ['activo','mora','pagado','anulado','renovado'].forEach(function(s){
+  // "Renovado" NO se ofrece a mano: solo lo pone el flujo de renovación, que siempre crea el
+  // crédito nuevo que compensa el capital. Marcarlo suelto dejaría capital sin respaldo en la caja.
+  // Solo aparece cuando el préstamo YA está renovado, para no perder su estado real al editar.
+  const estadosDisponibles = ['activo','mora','pagado','anulado'];
+  if(p.estado==='renovado') estadosDisponibles.push('renovado');
+  estadosDisponibles.forEach(function(s){
     const opt = document.createElement('option');
     opt.value=s; opt.textContent=s.charAt(0).toUpperCase()+s.slice(1);
     if(s===p.estado) opt.selected=true;

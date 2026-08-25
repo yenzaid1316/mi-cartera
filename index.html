@@ -833,7 +833,11 @@ function planPrestamo(p){
         if(c.pagado >= c.total - TOL){ c.pagada = true; c.fechaPago = a.fecha_abono || null; ci++; }
         else { c.parcial = c.pagado > 0; break; }
       }
-      a.aExceso = disp > TOL ? disp : 0;   // pagó de más: queda registrado, no se pierde
+      // Pagó de más (caso típico: se le cobró una semana adicional por el retraso). Ese excedente
+      // NO es capital devuelto — el capital ya quedó cubierto por la cascada — así que es ganancia:
+      // se cuenta como interés cobrado, igual que cualquier otro interés del negocio.
+      a.aExceso = disp > TOL ? disp : 0;
+      a.aInteres += a.aExceso;
     });
 
     cuotas.forEach(c=>{
@@ -844,7 +848,9 @@ function planPrestamo(p){
     });
 
     const abonado = abonos.reduce((t,a)=>t+(Number(a.monto)||0),0);
-    const interesCobrado = Math.min(intTot, abonos.reduce((t,a)=>t+a.aInteres,0));
+    // Sin tope: la cascada ya limita el interés de cada cuota a lo pactado, y el excedente cobrado
+    // por encima del total del crédito es ganancia legítima que debe sumar aquí.
+    const interesCobrado = abonos.reduce((t,a)=>t+a.aInteres,0);
     const capitalRecuperado = Math.min(monto, abonos.reduce((t,a)=>t+a.aCapital,0));
     const vencidas = cuotas.filter(c=>c.vencida);
     const prox = cuotas.find(c=>!c.pagada);
@@ -2841,7 +2847,7 @@ async function guardarAbono(prestamoId){
   const saldo = saldoPrestamo(p);
   if(monto > saldo + TOL){
     const exceso = monto - saldo;
-    if(!confirm('El abono ('+fmt(monto)+') supera el saldo pendiente ('+fmt(saldo)+').\n\nQuedará un saldo a favor de '+fmt(exceso)+'.\n\n¿Registrarlo así?')) {
+    if(!confirm('El abono ('+fmt(monto)+') supera el saldo pendiente ('+fmt(saldo)+').\n\nLos '+fmt(exceso)+' de más se registrarán como INTERÉS EXTRA COBRADO (ganancia), no como capital.\n\n¿Registrarlo así?')) {
       return reactivar(document.getElementById('btn-guardar-abono'),'Registrar abono');
     }
   }
@@ -3727,7 +3733,7 @@ function openDrawerAmortizacion(prestamoId){
         <div class="stat"><div class="stat-l">Saldo</div><div class="stat-v" style="color:var(--amber)">${fmt(pl.saldo)}</div><div class="stat-s">por cobrar</div></div>
       </div>
       ${vencidas.length>0?`<div class="alert alert-red">${ico('alert')}<div><strong>${vencidas.length} cuota${vencidas.length>1?'s':''} vencida${vencidas.length>1?'s':''}</strong> · ${fmt(pl.montoVencido)} · ${pl.diasAtraso} día${pl.diasAtraso>1?'s':''} de atraso</div></div>`:''}
-      ${pl.excesoPagado>TOL?`<div class="alert alert-blue">${ico('info')}<div>Saldo a favor del cliente: <strong>${fmt(pl.excesoPagado)}</strong></div></div>`:''}
+      ${pl.excesoPagado>TOL?`<div class="alert alert-green">${ico('info')}<div>Interés extra cobrado: <strong>${fmt(pl.excesoPagado)}</strong><br><span style="font-size:11px">Pagó por encima del total pactado. Cuenta como ganancia en "Intereses cobrados".</span></div></div>`:''}
       <div style="display:flex;flex-direction:column;gap:6px">
         ${cuotas.map(c=>{
           const col = c.pagada?'var(--green)':c.vencida?'var(--red)':c.parcial?'var(--amber)':'var(--txt3)';
@@ -3862,7 +3868,7 @@ function calcRecordatorios(){
     const hoy = today();
     const mananaStr = fechaMas(1, hoy);
     const en3Str = fechaMas(3, hoy);
-    const cobrosHoy=[], cobrosMañana=[], cobrosProximos=[], enMora=[];
+    const cobrosHoy=[], cobrosMañana=[], cobrosProximos=[], enMora=[], alDia=[];
 
     ps.forEach(p=>{
       const cli = clientes.find(x=>x.id===p.cliente_id) || {};
@@ -3871,7 +3877,9 @@ function calcRecordatorios(){
                     prestamo_id:p.id, cliente_id:p.cliente_id};
 
       if(pl.cuotasVencidas > 0){
-        enMora.push({...base, diasMora:pl.diasAtraso, monto:pl.montoVencido, cuotas:pl.cuotasVencidas, recargoMora:pl.recargoMora});
+        enMora.push({...base, diasMora:pl.diasAtraso, monto:pl.montoVencido, cuotas:pl.cuotasVencidas, recargoMora:pl.recargoMora, vencidoTotal: p.fecha_vencimiento < hoy});
+      } else {
+        alDia.push({...base, monto:pl.saldo, proximaCuota:pl.proximaCuota});
       }
       pl.cuotas.filter(c=>!c.pagada && !c.vencida).forEach(c=>{
         const item = {...base, monto:c.total-c.pagado, fecha:c.fecha, cuota:c.numero};
@@ -3881,15 +3889,16 @@ function calcRecordatorios(){
       });
     });
     enMora.sort((a,b)=>b.diasMora-a.diasMora);
-    return {cobrosHoy, cobrosMañana, cobrosProximos, enMora};
+    return {cobrosHoy, cobrosMañana, cobrosProximos, enMora, alDia};
   });
 }
+
+var _recFiltroActual = 'todos';
+var _recQueryActual = '';
 
 function renderRecordatorios(){
   const fab = document.querySelector('.fab');
   if(fab) fab.remove();
-  const {cobrosHoy, cobrosMañana, cobrosProximos, enMora} = calcRecordatorios();
-  const total = cobrosHoy.length+cobrosMañana.length+enMora.length;
 
   document.getElementById('screen').innerHTML = `
 <div class="fade-in">
@@ -3899,53 +3908,90 @@ function renderRecordatorios(){
     </button>
     <div>
       <h1 style="font-size:22px;font-weight:400;margin:0">Cobros pendientes</h1>
-      <p style="font-size:12px;color:var(--txt3);margin:2px 0 0">${total} urgentes hoy</p>
+      <p style="font-size:12px;color:var(--txt3);margin:2px 0 0" id="rec-count"></p>
     </div>
   </div>
 
-  <div style="padding:14px 20px 0;display:flex;flex-direction:column;gap:14px;margin-bottom:24px">
-
-    ${enMora.length>0?`
-    <div>
-      <div style="font-size:11px;color:var(--red);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;font-weight:600">En mora (${enMora.length})</div>
-      <div style="display:flex;flex-direction:column;gap:6px">
-        ${enMora.map(r=>itemCobro(r,'red',r.diasMora+'d mora'+(r.recargoMora>TOL?' +recargo':''),r.saldo+(r.recargoMora||0))).join('')}
-      </div>
-    </div>`:''}
-
-    ${cobrosHoy.length>0?`
-    <div>
-      <div style="font-size:11px;color:var(--amber);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;font-weight:600">Vencen hoy (${cobrosHoy.length})</div>
-      <div style="display:flex;flex-direction:column;gap:6px">
-        ${cobrosHoy.map(r=>itemCobro(r,'amber','Vence hoy',r.monto)).join('')}
-      </div>
-    </div>`:''}
-
-    ${cobrosMañana.length>0?`
-    <div>
-      <div style="font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;font-weight:600">Vencen mañana (${cobrosMañana.length})</div>
-      <div style="display:flex;flex-direction:column;gap:6px">
-        ${cobrosMañana.map(r=>itemCobro(r,'amber','Mañana',r.monto)).join('')}
-      </div>
-    </div>`:''}
-
-    ${cobrosProximos.length>0?`
-    <div>
-      <div style="font-size:11px;color:var(--txt3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;font-weight:600">Próximos 3 días (${cobrosProximos.length})</div>
-      <div style="display:flex;flex-direction:column;gap:6px">
-        ${cobrosProximos.map(r=>itemCobro(r,'green',fmtDate(r.fecha),r.monto)).join('')}
-      </div>
-    </div>`:''}
-
-    ${total===0&&enMora.length===0?`
-    <div class="empty">
-      <div style="font-size:48px;margin-bottom:12px"></div>
-      <div class="empty-title">Todo al día</div>
-      <div class="empty-sub">No tienes cobros urgentes en los próximos días</div>
-    </div>`:''}
-
+  <div class="search-bar" style="margin:14px 20px 0">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+    <input class="form-input" id="search-recordatorios" placeholder="Buscar cliente por nombre..." style="width:100%">
   </div>
+
+  <div style="padding:12px 20px 0">
+    <div class="toggle-group" role="tablist">
+      <button class="toggle-btn${_recFiltroActual==='todos'?' active':''}" data-rfiltro="todos">Todos</button>
+      <button class="toggle-btn${_recFiltroActual==='mora_vigente'?' active':''}" data-rfiltro="mora_vigente">Mora vigente</button>
+      <button class="toggle-btn${_recFiltroActual==='vencidos'?' active':''}" data-rfiltro="vencidos">Vencidos</button>
+      <button class="toggle-btn${_recFiltroActual==='al_dia'?' active':''}" data-rfiltro="al_dia">Al día</button>
+    </div>
+  </div>
+
+  <div style="padding:14px 20px 0;display:flex;flex-direction:column;gap:14px;margin-bottom:24px" id="rec-lista"></div>
 </div>`;
+
+  document.querySelectorAll('.toggle-btn[data-rfiltro]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('.toggle-btn[data-rfiltro]').forEach(function(b){ b.classList.remove('active'); });
+      this.classList.add('active');
+      _recFiltroActual = this.getAttribute('data-rfiltro');
+      pintarRecordatorios();
+    });
+  });
+  const srInput = document.getElementById('search-recordatorios');
+  if(srInput) srInput.addEventListener('input', function(){ pintarRecordatorios(this.value); });
+
+  pintarRecordatorios();
+}
+
+function pintarRecordatorios(query){
+  if(query !== undefined) _recQueryActual = query;
+  const q = (_recQueryActual||'').toLowerCase();
+  const {cobrosHoy, cobrosMañana, cobrosProximos, enMora, alDia} = calcRecordatorios();
+  const matchQ = r => !q || (r.nombre||'').toLowerCase().includes(q);
+
+  const listaEl = document.getElementById('rec-lista');
+  const countEl = document.getElementById('rec-count');
+  if(!listaEl) return;
+
+  const fMora = enMora.filter(r=>!r.vencidoTotal).filter(matchQ);
+  const fVenc = enMora.filter(r=>r.vencidoTotal).filter(matchQ);
+  const fDia  = alDia.filter(matchQ);
+  const fHoy  = cobrosHoy.filter(matchQ);
+  const fMan  = cobrosMañana.filter(matchQ);
+  const fProx = cobrosProximos.filter(matchQ);
+
+  let bloques = [];
+  if(_recFiltroActual==='todos'){
+    const todaMora = [...fVenc, ...fMora];
+    if(todaMora.length) bloques.push(['En mora','red', todaMora.map(r=>itemCobro(r,'red',(r.vencidoTotal?'Vencido total · ':'')+r.diasMora+'d mora'+(r.recargoMora>TOL?' +recargo':''), r.saldo+(r.recargoMora||0)))]);
+    if(fHoy.length)  bloques.push(['Vencen hoy','amber', fHoy.map(r=>itemCobro(r,'amber','Vence hoy', r.monto))]);
+    if(fMan.length)  bloques.push(['Vencen mañana','gold', fMan.map(r=>itemCobro(r,'amber','Mañana', r.monto))]);
+    if(fProx.length) bloques.push(['Próximos 3 días','txt3', fProx.map(r=>itemCobro(r,'green',fmtDate(r.fecha), r.monto))]);
+  } else if(_recFiltroActual==='mora_vigente'){
+    if(fMora.length) bloques.push(['Mora · crédito vigente','red', fMora.map(r=>itemCobro(r,'red', r.diasMora+'d mora'+(r.recargoMora>TOL?' +recargo':''), r.saldo+(r.recargoMora||0)))]);
+  } else if(_recFiltroActual==='vencidos'){
+    if(fVenc.length) bloques.push(['Vencido total','red', fVenc.map(r=>itemCobro(r,'red', 'Vencido · '+r.diasMora+'d', r.saldo+(r.recargoMora||0)))]);
+  } else if(_recFiltroActual==='al_dia'){
+    if(fDia.length) bloques.push(['Al día','green', fDia.map(r=>itemCobro(r,'green', r.proximaCuota?('Próx. '+fmtDate(r.proximaCuota)):'Al día', r.monto))]);
+  }
+
+  const total = bloques.reduce((s,b)=>s+b[2].length,0);
+  countEl.textContent = total + (total===1?' resultado':' resultados') + (q?' para "'+_recQueryActual+'"':'');
+
+  const colorVar = {red:'var(--red)',amber:'var(--amber)',gold:'var(--gold)',green:'var(--green)',txt3:'var(--txt3)'};
+  if(total===0){
+    listaEl.innerHTML = `<div class="empty">
+      <div style="font-size:48px;margin-bottom:12px"></div>
+      <div class="empty-title">${q?'Sin resultados':'Todo al día'}</div>
+      <div class="empty-sub">${q?'Ningún cliente coincide con "'+esc(_recQueryActual)+'"':'No tienes cobros urgentes en este filtro'}</div>
+    </div>`;
+  } else {
+    listaEl.innerHTML = bloques.map(([titulo,colorKey,items])=>`
+      <div>
+        <div style="font-size:11px;color:${colorVar[colorKey]};text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;font-weight:600">${titulo} (${items.length})</div>
+        <div style="display:flex;flex-direction:column;gap:6px">${items.join('')}</div>
+      </div>`).join('');
+  }
 }
 
 function itemCobro(r, color, etiqueta, monto){
@@ -5728,7 +5774,9 @@ function calcMetricasPeriodo(fechaDesde, fechaHasta){
   // Estado actual de la cartera
   const activos = ps.filter(function(p){ return estadoPrestamo(p)==='activo'; });
   const enMora  = ps.filter(function(p){ return estadoPrestamo(p)==='mora'; });
-  const capitalEnCalle = activos.concat(enMora).reduce(function(s,p){ return s+p.monto_prestado; },0);
+  // OJO: capital en calle es lo que TODAVÍA se debe, no lo que se prestó originalmente.
+  // Sumar monto_prestado ignoraba los abonos ya hechos e inflaba el número (bug real).
+  const capitalEnCalle = activos.concat(enMora).reduce(function(s,p){ return s+planPrestamo(p).capitalPendiente; },0);
   const clientesActivos = new Set(activos.concat(enMora).map(function(p){ return p.cliente_id; })).size;
   const pctMora = capitalEnCalle>0 ? ((enMora.reduce(function(s,p){ return s+saldoPrestamo(p);},0)/capitalEnCalle)*100).toFixed(1) : 0;
   const roiPeriodo = capitalEnCalle>0 ? ((interesesPeriodo/capitalEnCalle)*100).toFixed(1) : 0;
@@ -5807,7 +5855,7 @@ function renderCierres(){
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">' +
       kpi('Capital libre inicial', fmt(ultimoCierre ? ultimoCierre.capitalLibreFinal : cap.baseCapital), 'var(--gold)', 'Al inicio del período') +
       kpi('Capital libre final', fmt(cap.libre), 'var(--gold)', 'Hoy') +
-      kpi('Capital en calle', fmt(metricas.capitalEnCalle), 'var(--amber)', metricas.countActivo + ' préstamos activos') +
+      kpi('Capital en calle', fmt(metricas.capitalEnCalle), 'var(--amber)', metricas.countActivo + ' al día · ' + metricas.countMora + ' en mora') +
       kpi('Capital total', fmt(metricas.capitalTotal), 'var(--txt)', 'Inyectado + intereses') +
     '</div>' +
 

@@ -981,7 +981,7 @@ function resumenCartera(){
         cuotasVencidas += pl.cuotasVencidas; montoVencido += pl.montoVencido;
       }
       if(est==='pagado') countPagado++;
-      else interesesPendientes += pl.interesPendiente;
+      else if(est!=='renovado') interesesPendientes += pl.interesPendiente;   // un crédito renovado ya se cerró: su interés no cobrado no es "por cobrar"
 
       if(est==='activo'||est==='mora'){
         saldosPorCliente[p.cliente_id] = (saldosPorCliente[p.cliente_id]||0) + pl.saldo;
@@ -3879,7 +3879,7 @@ function calcRecordatorios(){
       if(pl.cuotasVencidas > 0){
         enMora.push({...base, diasMora:pl.diasAtraso, monto:pl.montoVencido, cuotas:pl.cuotasVencidas, recargoMora:pl.recargoMora, vencidoTotal: p.fecha_vencimiento < hoy});
       } else {
-        alDia.push({...base, monto:pl.saldo, proximaCuota:pl.proximaCuota});
+        alDia.push({...base, monto:pl.saldo, proximaCuota:(pl.proximaCuota ? pl.proximaCuota.fecha : null)});
       }
       pl.cuotas.filter(c=>!c.pagada && !c.vencida).forEach(c=>{
         const item = {...base, monto:c.total-c.pagado, fecha:c.fecha, cuota:c.numero};
@@ -3889,6 +3889,7 @@ function calcRecordatorios(){
       });
     });
     enMora.sort((a,b)=>b.diasMora-a.diasMora);
+    alDia.sort((a,b)=>String(a.proximaCuota||'9999').localeCompare(String(b.proximaCuota||'9999')));
     return {cobrosHoy, cobrosMañana, cobrosProximos, enMora, alDia};
   });
 }
